@@ -234,3 +234,24 @@ TEST(Write, LazyIsTheSameAsEager) {
   // Only as far as it is read: the first few characters, and no more made.
   EXPECT_EQ(chevron::to_xml(q) | std::views::take(6) | std::ranges::to<std::string>(), "<query");
 }
+
+
+namespace {
+
+// Written lazily and read back while the program is compiled.
+constexpr bool round_trip() {
+  chat::query q;
+  q.items.push_back({"nurse", 2, {"Capulets", "Servants"}});
+  q.items.push_back({"romeo", 1, {}});
+  const std::string written = chevron::to_xml(q) | std::ranges::to<std::string>();
+  const auto back = chevron::read<chat::query>(std::string_view(written) | chevron::events);
+  return back && back->items.size() == 2 && back->items[0].jid == "nurse" &&
+         back->items[0].order == 2 && back->items[0].group.size() == 2 &&
+         back->items[1].group.empty();
+}
+
+static_assert(round_trip());
+
+TEST(Write, AtCompileTime) { EXPECT_TRUE(round_trip()); }
+
+}  // namespace

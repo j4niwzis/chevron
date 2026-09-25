@@ -236,8 +236,8 @@ class parser {
 
   // Somewhere lasting for a string an event refers to, until the next call.
   constexpr std::string_view keep(std::string text) {
-    kept_.push_back(std::move(text));
-    return kept_.back();
+    kept_.push_back(std::make_unique<std::string>(std::move(text)));
+    return *kept_.back();
   }
 
   constexpr std::optional<std::string_view> uri_of(std::string_view prefix) const {
@@ -702,7 +702,9 @@ class parser {
   std::vector<open_element> open_;
   std::vector<std::pair<std::string, std::string>> bindings_;  // prefix, URI
   std::vector<attribute> attributes_;
-  std::deque<std::string> kept_;
+  // Each on its own, so that what was handed out stays where it is as more
+  // are kept: a deque would do that too, but a deque is not constexpr.
+  std::vector<std::unique_ptr<std::string>> kept_;
 };
 
 }  // namespace chevron

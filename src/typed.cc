@@ -845,17 +845,17 @@ struct frame {
     std::string_view text{};
     std::unique_ptr<frame> child{};
   };
-  virtual ~frame() = default;
-  virtual step next() = 0;
+  constexpr virtual ~frame() = default;
+  constexpr virtual step next() = 0;
 };
 
 using step = frame::step;
 
-inline step piece(std::string_view text) { return {step::what::piece, text, nullptr}; }
-inline step child(std::unique_ptr<frame> inner) { return {step::what::child, {}, std::move(inner)}; }
-inline step done() { return {}; }
+constexpr step piece(std::string_view text) { return {step::what::piece, text, nullptr}; }
+constexpr step child(std::unique_ptr<frame> inner) { return {step::what::child, {}, std::move(inner)}; }
+constexpr step done() { return {}; }
 
-std::string start_tag(std::string_view uri, std::string_view local, std::string_view in_effect,
+constexpr std::string start_tag(std::string_view uri, std::string_view local, std::string_view in_effect,
                       const std::vector<std::tuple<std::string_view, std::string_view, std::string>>& attributes,
                       bool empty) {
   std::string out;
@@ -867,9 +867,9 @@ std::string start_tag(std::string_view uri, std::string_view local, std::string_
 
 class any_frame final : public frame {
  public:
-  any_frame(const any& element, std::string_view in_effect) : element_(element), in_effect_(in_effect) {}
+  constexpr any_frame(const any& element, std::string_view in_effect) : element_(element), in_effect_(in_effect) {}
 
-  step next() override {
+  constexpr step next() override {
     if (phase_ == 0) {
       std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
       for (const auto& [name, value] : element_.attributes)
@@ -910,10 +910,10 @@ class element_frame final : public frame {
   static constexpr std::size_t count = info::schema.count;
 
  public:
-  element_frame(const T& value, std::string_view uri, std::string_view local, std::string_view in_effect)
+  constexpr element_frame(const T& value, std::string_view uri, std::string_view local, std::string_view in_effect)
       : value_(value), uri_(uri), local_(local), in_effect_(in_effect) {}
 
-  step next() override {
+  constexpr step next() override {
     if (phase_ == 0)
       return open();
     if (phase_ == 1) {
@@ -930,7 +930,7 @@ class element_frame final : public frame {
   }
 
  private:
-  step open() {
+  constexpr step open() {
     std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
     bool content = false;
     [&]<std::size_t... I>(std::index_sequence<I...>) {
@@ -967,14 +967,14 @@ class element_frame final : public frame {
   // The next thing member_ gives, if it gives any more; otherwise on to the
   // member after it.
   template <std::size_t... I>
-  std::optional<step> member(std::index_sequence<I...>) {
+  constexpr std::optional<step> member(std::index_sequence<I...>) {
     std::optional<step> out;
     ((member_ == I ? (out = member_at<I>(), true) : false) || ...);
     return out;
   }
 
   template <std::size_t K>
-  std::optional<step> member_at() {
+  constexpr std::optional<step> member_at() {
     constexpr members::kind what = info::template kind_of<K>();
     const auto& held = boost::pfr::get<K>(value_);
     using type = std::remove_cvref_t<decltype(held)>;
@@ -1052,11 +1052,11 @@ class element_frame final : public frame {
 // The writing machine: a stack of frames, and the piece being given out.
 class machine {
  public:
-  machine() = default;
-  explicit machine(std::unique_ptr<frame> root) { stack_.push_back(std::move(root)); }
+  constexpr machine() = default;
+  constexpr explicit machine(std::unique_ptr<frame> root) { stack_.push_back(std::move(root)); }
 
   // The next piece, or nothing where the document is written.
-  std::optional<std::string_view> next() {
+  constexpr std::optional<std::string_view> next() {
     while (!stack_.empty()) {
       step one = stack_.back()->next();
       switch (one.kind) {
@@ -1099,18 +1099,18 @@ class xml_view : public std::ranges::view_interface<xml_view<T>> {
     using iterator_concept = std::input_iterator_tag;
 
     iterator() = default;
-    explicit iterator(xml_view* view) : view_(view) { view_->pull(); }
+    constexpr explicit iterator(xml_view* view) : view_(view) { view_->pull(); }
     iterator(iterator&&) = default;
     iterator& operator=(iterator&&) = default;
 
-    char operator*() const { return view_->piece_[view_->at_]; }
-    iterator& operator++() {
+    constexpr char operator*() const { return view_->piece_[view_->at_]; }
+    constexpr iterator& operator++() {
       if (++view_->at_ == view_->piece_.size())
         view_->pull();
       return *this;
     }
-    void operator++(int) { ++*this; }
-    friend bool operator==(const iterator& one, std::default_sentinel_t) { return one.view_->done_; }
+    constexpr void operator++(int) { ++*this; }
+    friend constexpr bool operator==(const iterator& one, std::default_sentinel_t) { return one.view_->done_; }
 
    private:
     xml_view* view_ = nullptr;
@@ -1126,56 +1126,56 @@ class xml_view : public std::ranges::view_interface<xml_view<T>> {
       using iterator_concept = std::input_iterator_tag;
 
       iterator() = default;
-      explicit iterator(xml_view* view) : view_(view) { view_->pull(); }
+      constexpr explicit iterator(xml_view* view) : view_(view) { view_->pull(); }
       iterator(iterator&&) = default;
       iterator& operator=(iterator&&) = default;
 
-      std::string_view operator*() const { return view_->piece_; }
-      iterator& operator++() {
+      constexpr std::string_view operator*() const { return view_->piece_; }
+      constexpr iterator& operator++() {
         view_->pull();
         return *this;
       }
-      void operator++(int) { ++*this; }
-      friend bool operator==(const iterator& one, std::default_sentinel_t) { return one.view_->done_; }
+      constexpr void operator++(int) { ++*this; }
+      friend constexpr bool operator==(const iterator& one, std::default_sentinel_t) { return one.view_->done_; }
 
      private:
       xml_view* view_ = nullptr;
     };
 
-    explicit chunk_view(xml_view* view) : view_(view) {}
-    iterator begin() {
+    constexpr explicit chunk_view(xml_view* view) : view_(view) {}
+    constexpr iterator begin() {
       view_->start();
       return iterator(view_);
     }
-    std::default_sentinel_t end() const noexcept { return {}; }
+    constexpr std::default_sentinel_t end() const noexcept { return {}; }
 
    private:
     xml_view* view_;
   };
 
-  explicit xml_view(const T& value) : value_(&value) {}
-  explicit xml_view(T&& value) : owned_(std::make_unique<T>(std::move(value))), value_(owned_.get()) {}
+  constexpr explicit xml_view(const T& value) : value_(&value) {}
+  constexpr explicit xml_view(T&& value) : owned_(std::make_unique<T>(std::move(value))), value_(owned_.get()) {}
   xml_view(xml_view&&) = default;
   xml_view& operator=(xml_view&&) = default;
 
-  iterator begin() {
+  constexpr iterator begin() {
     start();
     return iterator(this);
   }
-  std::default_sentinel_t end() const noexcept { return {}; }
+  constexpr std::default_sentinel_t end() const noexcept { return {}; }
 
   // The same document, as the pieces it is made in.
-  chunk_view chunks() { return chunk_view(this); }
+  constexpr chunk_view chunks() { return chunk_view(this); }
 
  private:
-  void start() {
+  constexpr void start() {
     constexpr auto schema = xml_schema(type<T>{});
     static_assert(schema.named, "chevron: a type written on its own needs .name() in its schema");
     machine_ = detail::lazy::machine(std::make_unique<detail::lazy::element_frame<T>>(
         *value_, schema.uri, schema.local, std::string_view()));
     done_ = false;
   }
-  void pull() {
+  constexpr void pull() {
     at_ = 0;
     if (const auto next = machine_.next())
       piece_ = *next;
@@ -1193,7 +1193,7 @@ class xml_view : public std::ranges::view_interface<xml_view<T>> {
 
 template <class T>
   requires described<std::remove_cvref_t<T>>
-xml_view<std::remove_cvref_t<T>> to_xml(T&& value) {
+constexpr xml_view<std::remove_cvref_t<T>> to_xml(T&& value) {
   return xml_view<std::remove_cvref_t<T>>(std::forward<T>(value));
 }
 
