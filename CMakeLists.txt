@@ -19,7 +19,7 @@ if(NOT COMMAND cme_find_package)
 endif()
 # Boost.PFR, as a module: the names and the members of an aggregate, for the
 # typed reading.
-cme_find_package(boost_pfr COMPONENTS modules REQUIRED)
+cme_find_package(Boost COMPONENTS pfr[modules] REQUIRED)
 
 # The bound on the steps of one constant evaluation, for chevron and what
 # imports it.
