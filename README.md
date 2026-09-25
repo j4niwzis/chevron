@@ -73,8 +73,11 @@ auto s = chevron::read_one_of<chat::message, chat::presence>(parser);
   absent; `std::vector` may repeat.
 - Checked at compile time: one descriptor per member, no member described
   twice, and a descriptor that fits its member's type.
-- Writing is the same schema the other way: `chevron::write(out, value)` to
-  an output iterator of `char`, or `chevron::to_xml(value)` -- namespaces
+- Writing is the same schema the other way, lazily:
+  `chevron::to_xml(value) | std::ranges::to<std::string>()` -- a view of the
+  document's characters made as they are pulled, piece by piece, with
+  `.chunks()` for the pieces themselves; or at once, with
+  `chevron::write(out, value)` to an output iterator of `char` -- namespaces
   declared where they change, values escaped, what was kept as
   `chevron::any` written back as it came, and what is written read back as
   the same value.

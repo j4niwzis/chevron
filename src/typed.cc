@@ -823,12 +823,378 @@ constexpr Out write(Out out, const T& value) {
   return out;
 }
 
-// The same, as a string.
-template <described T>
-constexpr std::string to_xml(const T& value) {
+
+}  // namespace chevron
+
+namespace chevron::detail::lazy {
+
+using reading::element_of;
+using reading::is_optional;
+using reading::is_vector;
+using reading::described_member;
+using writing::put;
+using writing::put_text;
+using writing::text_of;
+
+// One element being written, as a machine that gives the next piece of text
+// each time it is asked -- or an element nested in it to write first, or that
+// it is done. The pieces stay valid until it is asked again.
+struct frame {
+  struct step {
+    enum class what : std::uint8_t { piece, child, done } kind = what::done;
+    std::string_view text{};
+    std::unique_ptr<frame> child{};
+  };
+  virtual ~frame() = default;
+  virtual step next() = 0;
+};
+
+using step = frame::step;
+
+inline step piece(std::string_view text) { return {step::what::piece, text, nullptr}; }
+inline step child(std::unique_ptr<frame> inner) { return {step::what::child, {}, std::move(inner)}; }
+inline step done() { return {}; }
+
+std::string start_tag(std::string_view uri, std::string_view local, std::string_view in_effect,
+                      const std::vector<std::tuple<std::string_view, std::string_view, std::string>>& attributes,
+                      bool empty) {
   std::string out;
-  write(std::back_inserter(out), value);
+  auto at = std::back_inserter(out);
+  writing::open(at, uri, local, in_effect, attributes);
+  put(at, empty ? "/>" : ">");
   return out;
+}
+
+class any_frame final : public frame {
+ public:
+  any_frame(const any& element, std::string_view in_effect) : element_(element), in_effect_(in_effect) {}
+
+  step next() override {
+    if (phase_ == 0) {
+      std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
+      for (const auto& [name, value] : element_.attributes)
+        attributes.emplace_back(name.first, name.second, value);
+      buffer_ = start_tag(element_.uri, element_.local, in_effect_, attributes, element_.children.empty());
+      phase_ = element_.children.empty() ? 2 : 1;
+      return piece(buffer_);
+    }
+    if (phase_ == 1) {
+      if (at_ < element_.children.size()) {
+        const any_node& one = element_.children[at_++];
+        if (const auto* text = std::get_if<std::string>(&one.value)) {
+          buffer_.clear();
+          auto out = std::back_inserter(buffer_);
+          put_text(out, *text);
+          return piece(buffer_);
+        }
+        return child(std::make_unique<any_frame>(std::get<any>(one.value), element_.uri));
+      }
+      buffer_ = "</" + element_.local + ">";
+      phase_ = 2;
+      return piece(buffer_);
+    }
+    return done();
+  }
+
+ private:
+  const any& element_;
+  std::string_view in_effect_;
+  int phase_ = 0;
+  std::size_t at_ = 0;
+  std::string buffer_;
+};
+
+template <class T>
+class element_frame final : public frame {
+  using info = described_member<T>;
+  static constexpr std::size_t count = info::schema.count;
+
+ public:
+  element_frame(const T& value, std::string_view uri, std::string_view local, std::string_view in_effect)
+      : value_(value), uri_(uri), local_(local), in_effect_(in_effect) {}
+
+  step next() override {
+    if (phase_ == 0)
+      return open();
+    if (phase_ == 1) {
+      while (member_ < count) {
+        std::optional<step> out = member(std::make_index_sequence<count>{});
+        if (out)
+          return std::move(*out);
+      }
+      buffer_ = "</" + std::string(local_) + ">";
+      phase_ = 2;
+      return piece(buffer_);
+    }
+    return done();
+  }
+
+ private:
+  step open() {
+    std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
+    bool content = false;
+    [&]<std::size_t... I>(std::index_sequence<I...>) {
+      (info::template check<I>(), ...);
+      const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
+        constexpr members::kind what = info::template kind_of<K>();
+        const auto& held = boost::pfr::get<K>(value_);
+        using type = std::remove_cvref_t<decltype(held)>;
+        if constexpr (what == members::kind::attribute) {
+          const std::string_view in = info::schema.bound[K].uri.value_or(std::string_view());
+          if constexpr (is_optional<type>::value) {
+            if (held)
+              attributes.emplace_back(in, info::template local_of<K>(), text_of(*held));
+          } else {
+            attributes.emplace_back(in, info::template local_of<K>(), text_of(held));
+          }
+        } else if constexpr (is_optional<type>::value) {
+          content = content || held.has_value();
+        } else if constexpr (is_vector<type>::value) {
+          content = content || !held.empty();
+        } else if constexpr (what == members::kind::text) {
+          content = content || !text_of(held).empty();
+        } else {
+          content = true;
+        }
+      };
+      (one(std::integral_constant<std::size_t, I>{}), ...);
+    }(std::make_index_sequence<count>{});
+    buffer_ = start_tag(uri_, local_, in_effect_, attributes, !content);
+    phase_ = content ? 1 : 2;
+    return piece(buffer_);
+  }
+
+  // The next thing member_ gives, if it gives any more; otherwise on to the
+  // member after it.
+  template <std::size_t... I>
+  std::optional<step> member(std::index_sequence<I...>) {
+    std::optional<step> out;
+    ((member_ == I ? (out = member_at<I>(), true) : false) || ...);
+    return out;
+  }
+
+  template <std::size_t K>
+  std::optional<step> member_at() {
+    constexpr members::kind what = info::template kind_of<K>();
+    const auto& held = boost::pfr::get<K>(value_);
+    using type = std::remove_cvref_t<decltype(held)>;
+    using one_value = element_of<type>;
+    const auto move_on = [&] {
+      ++member_;
+      index_ = 0;
+    };
+    if constexpr (what == members::kind::attribute) {
+      move_on();
+      return std::nullopt;
+    } else if constexpr (what == members::kind::text) {
+      move_on();
+      buffer_.clear();
+      auto out = std::back_inserter(buffer_);
+      if constexpr (is_optional<type>::value) {
+        if (!held)
+          return std::nullopt;
+        put_text(out, text_of(*held));
+      } else {
+        put_text(out, text_of(held));
+      }
+      return piece(buffer_);
+    } else if constexpr (what == members::kind::unknown_children) {
+      if (index_ >= held.size()) {
+        move_on();
+        return std::nullopt;
+      }
+      return child(std::make_unique<any_frame>(held[index_++], uri_));
+    } else {
+      // An occurrence of a child: the index-th of a vector, or the one there
+      // is of an optional or a plain member.
+      const one_value* occurrence = nullptr;
+      if constexpr (is_vector<type>::value) {
+        if (index_ < held.size())
+          occurrence = &held[index_];
+      } else if constexpr (is_optional<type>::value) {
+        if (index_ == 0 && held)
+          occurrence = &*held;
+      } else {
+        if (index_ == 0)
+          occurrence = &held;
+      }
+      if (!occurrence) {
+        move_on();
+        return std::nullopt;
+      }
+      ++index_;
+      constexpr auto name = info::template child_name<K>();
+      const std::string_view child_uri = name.second.value_or(uri_);
+      if constexpr (what == members::kind::child) {
+        return child(std::make_unique<element_frame<one_value>>(*occurrence, child_uri, name.first, uri_));
+      } else {
+        buffer_ = start_tag(child_uri, name.first, uri_, {}, false);
+        auto out = std::back_inserter(buffer_);
+        put_text(out, text_of(*occurrence));
+        put(out, "</");
+        put(out, name.first);
+        put(out, ">");
+        return piece(buffer_);
+      }
+    }
+  }
+
+  const T& value_;
+  std::string_view uri_;
+  std::string_view local_;
+  std::string_view in_effect_;
+  int phase_ = 0;
+  std::size_t member_ = 0;
+  std::size_t index_ = 0;
+  std::string buffer_;
+};
+
+// The writing machine: a stack of frames, and the piece being given out.
+class machine {
+ public:
+  machine() = default;
+  explicit machine(std::unique_ptr<frame> root) { stack_.push_back(std::move(root)); }
+
+  // The next piece, or nothing where the document is written.
+  std::optional<std::string_view> next() {
+    while (!stack_.empty()) {
+      step one = stack_.back()->next();
+      switch (one.kind) {
+        case step::what::piece:
+          if (!one.text.empty())
+            return one.text;
+          break;
+        case step::what::child:
+          stack_.push_back(std::move(one.child));
+          break;
+        case step::what::done:
+          stack_.pop_back();
+          break;
+      }
+    }
+    return std::nullopt;
+  }
+
+ private:
+  std::vector<std::unique_ptr<frame>> stack_;
+};
+
+}  // namespace chevron::detail::lazy
+
+export namespace chevron {
+
+// A value as XML, lazily: a view of its characters, made as they are pulled --
+// piece by piece, with nothing of the document held but the piece being
+// read. to_xml(value) | std::ranges::to<std::string>() for a string;
+// .chunks() for the pieces themselves, which is cheaper to copy from. A value
+// given as an rvalue is kept by the view; one given as an lvalue is referred
+// to, and has to outlive it.
+template <described T>
+class xml_view : public std::ranges::view_interface<xml_view<T>> {
+ public:
+  class iterator {
+   public:
+    using value_type = char;
+    using difference_type = std::ptrdiff_t;
+    using iterator_concept = std::input_iterator_tag;
+
+    iterator() = default;
+    explicit iterator(xml_view* view) : view_(view) { view_->pull(); }
+    iterator(iterator&&) = default;
+    iterator& operator=(iterator&&) = default;
+
+    char operator*() const { return view_->piece_[view_->at_]; }
+    iterator& operator++() {
+      if (++view_->at_ == view_->piece_.size())
+        view_->pull();
+      return *this;
+    }
+    void operator++(int) { ++*this; }
+    friend bool operator==(const iterator& one, std::default_sentinel_t) { return one.view_->done_; }
+
+   private:
+    xml_view* view_ = nullptr;
+  };
+
+  // The pieces the characters come in.
+  class chunk_view : public std::ranges::view_interface<chunk_view> {
+   public:
+    class iterator {
+     public:
+      using value_type = std::string_view;
+      using difference_type = std::ptrdiff_t;
+      using iterator_concept = std::input_iterator_tag;
+
+      iterator() = default;
+      explicit iterator(xml_view* view) : view_(view) { view_->pull(); }
+      iterator(iterator&&) = default;
+      iterator& operator=(iterator&&) = default;
+
+      std::string_view operator*() const { return view_->piece_; }
+      iterator& operator++() {
+        view_->pull();
+        return *this;
+      }
+      void operator++(int) { ++*this; }
+      friend bool operator==(const iterator& one, std::default_sentinel_t) { return one.view_->done_; }
+
+     private:
+      xml_view* view_ = nullptr;
+    };
+
+    explicit chunk_view(xml_view* view) : view_(view) {}
+    iterator begin() {
+      view_->start();
+      return iterator(view_);
+    }
+    std::default_sentinel_t end() const noexcept { return {}; }
+
+   private:
+    xml_view* view_;
+  };
+
+  explicit xml_view(const T& value) : value_(&value) {}
+  explicit xml_view(T&& value) : owned_(std::make_unique<T>(std::move(value))), value_(owned_.get()) {}
+  xml_view(xml_view&&) = default;
+  xml_view& operator=(xml_view&&) = default;
+
+  iterator begin() {
+    start();
+    return iterator(this);
+  }
+  std::default_sentinel_t end() const noexcept { return {}; }
+
+  // The same document, as the pieces it is made in.
+  chunk_view chunks() { return chunk_view(this); }
+
+ private:
+  void start() {
+    constexpr auto schema = xml_schema(type<T>{});
+    static_assert(schema.named, "chevron: a type written on its own needs .name() in its schema");
+    machine_ = detail::lazy::machine(std::make_unique<detail::lazy::element_frame<T>>(
+        *value_, schema.uri, schema.local, std::string_view()));
+    done_ = false;
+  }
+  void pull() {
+    at_ = 0;
+    if (const auto next = machine_.next())
+      piece_ = *next;
+    else
+      done_ = true;
+  }
+
+  std::unique_ptr<T> owned_;
+  const T* value_ = nullptr;
+  detail::lazy::machine machine_;
+  std::string_view piece_;
+  std::size_t at_ = 0;
+  bool done_ = true;
+};
+
+template <class T>
+  requires described<std::remove_cvref_t<T>>
+xml_view<std::remove_cvref_t<T>> to_xml(T&& value) {
+  return xml_view<std::remove_cvref_t<T>>(std::forward<T>(value));
 }
 
 }  // namespace chevron

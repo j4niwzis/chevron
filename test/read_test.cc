@@ -158,12 +158,12 @@ TEST(Read, FromAParserFedAsBytesArrive) {
 
 TEST(Write, ExactOutput) {
   const chat::message m{"juliet", "romeo", std::nullopt, "a < b & \"c\"", {}};
-  EXPECT_EQ(chevron::to_xml(m),
+  EXPECT_EQ(chevron::to_xml(m) | std::ranges::to<std::string>(),
             "<message xmlns=\"urn:example:client\" to=\"juliet\" from=\"romeo\">"
             "<body>a &lt; b &amp; \"c\"</body></message>");
   // Attribute values keep their white space and quotes.
   const chat::message odd{"a\"b\tc", "x", "chat", std::nullopt, {}};
-  EXPECT_EQ(chevron::to_xml(odd),
+  EXPECT_EQ(chevron::to_xml(odd) | std::ranges::to<std::string>(),
             "<message xmlns=\"urn:example:client\" to=\"a&quot;b&#x9;c\" from=\"x\" type=\"chat\"/>");
 }
 
@@ -172,7 +172,7 @@ TEST(Write, ReadBackTheSame) {
   chat::query q;
   q.items.push_back({"nurse", 2, {"Capulets", "Servants"}});
   q.items.push_back({"romeo", 1, {}});
-  const std::string written = chevron::to_xml(q);
+  const std::string written = chevron::to_xml(q) | std::ranges::to<std::string>();
   const auto back = chevron::read<chat::query>(std::string_view(written) | chevron::events);
   ASSERT_TRUE(back.has_value()) << written;
   ASSERT_EQ(back->items.size(), 2u);
@@ -187,12 +187,50 @@ TEST(Write, ReadBackTheSame) {
       "<x xmlns=\"urn:example:x\" a=\"1\">kept <y/></x></message>";
   const auto m = chevron::read<chat::message>(in | chevron::events);
   ASSERT_TRUE(m.has_value());
-  EXPECT_EQ(chevron::to_xml(*m), in);
+  EXPECT_EQ(chevron::to_xml(*m) | std::ranges::to<std::string>(), in);
 
   const chat::presence p{"away", 5};
-  const std::string presence = chevron::to_xml(p);
+  const std::string presence = chevron::to_xml(p) | std::ranges::to<std::string>();
   const auto p_back = chevron::read<chat::presence>(std::string_view(presence) | chevron::events);
   ASSERT_TRUE(p_back.has_value()) << presence;
   EXPECT_EQ(p_back->show, p.show);
   EXPECT_EQ(p_back->priority, p.priority);
+}
+
+namespace {
+
+template <class T>
+std::string eagerly(const T& value) {
+  std::string out;
+  chevron::write(std::back_inserter(out), value);
+  return out;
+}
+
+}  // namespace
+
+// The lazy view gives what writing at once gives, character by character or
+// piece by piece, from a value it refers to or one it keeps.
+TEST(Write, LazyIsTheSameAsEager) {
+  chat::query q;
+  for (int n = 0; n < 50; ++n)
+    q.items.push_back({"contact" + std::to_string(n), n, {"group <" + std::to_string(n % 3) + ">"}});
+  const std::string whole = eagerly(q);
+  EXPECT_EQ(chevron::to_xml(q) | std::ranges::to<std::string>(), whole);
+
+  auto view = chevron::to_xml(q);
+  std::string joined;
+  std::size_t pieces = 0;
+  for (const std::string_view one : view.chunks()) {
+    joined += one;
+    ++pieces;
+  }
+  EXPECT_EQ(joined, whole);
+  EXPECT_GT(pieces, 100u);  // made in pieces, not as one string
+
+  // Kept by the view: the value it came from is gone.
+  const std::string kept = chevron::to_xml(chat::presence{"dnd", 7}) | std::ranges::to<std::string>();
+  EXPECT_EQ(kept, eagerly(chat::presence{"dnd", 7}));
+
+  // Only as far as it is read: the first few characters, and no more made.
+  EXPECT_EQ(chevron::to_xml(q) | std::views::take(6) | std::ranges::to<std::string>(), "<query");
 }
