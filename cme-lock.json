@@ -1,0 +1,13 @@
+{
+  "about": "Written by cmake-everywhere. Commit this file. Every value is a fact about something outside this project that has to stay true: the commit a library was fetched at, the digest of an archive, and the digest of a port file read from somewhere else. Configure with -DCME_LOCK_ALL=ON to write it again.",
+  "lock": 1,
+  "ports": {
+    "cmake-everywhere": {
+      "version": "v0.2.4"
+    },
+    "googletest-modules": {
+      "commit": "706920f1d230f0316d271466d8885735be3e300e",
+      "url": "https://github.com/j4niwzis/googletest-modules.git"
+    }
+  }
+}
