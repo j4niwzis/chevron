@@ -221,6 +221,124 @@ constexpr std::size_t plain_ascii(std::string_view in, std::size_t at, std::size
   return done;
 }
 
+
+// Where the first byte is that is not simply a character: a control other
+// than a tab or a line feed -- a carriage return among them, which becomes a
+// line feed. 32 bytes at a time.
+inline std::size_t special(std::string_view in, std::size_t at, std::size_t to) {
+  std::size_t done = at;
+  while (done + 32 <= to) {
+    bytes32 chunk;
+    std::memcpy(&chunk, in.data() + done, 32);
+    const std::uint32_t stop = mask_of(chunk < static_cast<unsigned char>(0x20)) &
+                               ~mask_of(chunk == static_cast<unsigned char>('\t')) &
+                               ~mask_of(chunk == static_cast<unsigned char>('\n'));
+    if (stop != 0) return done + static_cast<std::size_t>(std::countr_zero(stop));
+    done += 32;
+  }
+  while (done < to) {
+    const auto byte = static_cast<unsigned char>(in[done]);
+    if (byte < 0x20 && byte != '\t' && byte != '\n') break;
+    ++done;
+  }
+  return done;
+}
+
+// UTF-8 checked 16 bytes at a time, the way simdjson does (Keiser and
+// Lemire): each byte looked up by its high nibble and the nibbles of the
+// byte before it, the answers ANDed so that every error leaves a bit, and the
+// bytes after a three- or four-byte lead checked to be continuations. Byte
+// shuffles, SSSE3: compiled for it, used where the processor has it.
+#if defined(__x86_64__) || defined(__i386__)
+using sbytes16 = char __attribute__((vector_size(16)));
+using bytes16 = unsigned char __attribute__((vector_size(16)));
+
+[[gnu::target("ssse3")]] inline bytes16 lookup16(bytes16 table, bytes16 index) {
+  return (bytes16)__builtin_ia32_pshufb128((sbytes16)table, (sbytes16)index);
+}
+
+template <int Shift>
+[[gnu::target("ssse3")]] inline bytes16 before(bytes16 input, bytes16 previous) {
+  return (bytes16)__builtin_ia32_palignr128((sbytes16)input, (sbytes16)previous, 16 - Shift);
+}
+
+[[gnu::target("ssse3")]] inline bytes16 block_errors(bytes16 input, bytes16 previous) {
+  constexpr unsigned char too_short = 1 << 0, too_long = 1 << 1, overlong_3 = 1 << 2,
+                          too_large = 1 << 3, surrogate = 1 << 4, overlong_2 = 1 << 5,
+                          too_large_1000 = 1 << 6, overlong_4 = 1 << 6, two_conts = 1 << 7,
+                          carry = too_short | too_long | two_conts;
+  const bytes16 prev1 = before<1>(input, previous);
+  constexpr bytes16 first_high = {
+      too_long, too_long, too_long, too_long, too_long, too_long, too_long, too_long,
+      two_conts, two_conts, two_conts, two_conts,
+      too_short | overlong_2, too_short, too_short | overlong_3 | surrogate,
+      too_short | too_large | too_large_1000 | overlong_4};
+  constexpr bytes16 first_low = {
+      carry | overlong_3 | overlong_2 | overlong_4, carry | overlong_2, carry, carry,
+      carry | too_large, carry | too_large | too_large_1000,
+      carry | too_large | too_large_1000, carry | too_large | too_large_1000,
+      carry | too_large | too_large_1000, carry | too_large | too_large_1000,
+      carry | too_large | too_large_1000, carry | too_large | too_large_1000,
+      carry | too_large | too_large_1000, carry | too_large | too_large_1000 | surrogate,
+      carry | too_large | too_large_1000, carry | too_large | too_large_1000};
+  constexpr bytes16 second_high = {
+      too_short, too_short, too_short, too_short, too_short, too_short, too_short, too_short,
+      too_long | overlong_2 | two_conts | overlong_3 | too_large_1000 | overlong_4,
+      too_long | overlong_2 | two_conts | overlong_3 | too_large,
+      too_long | overlong_2 | two_conts | surrogate | too_large,
+      too_long | overlong_2 | two_conts | surrogate | too_large,
+      too_short, too_short, too_short, too_short};
+  const bytes16 special_cases = lookup16(first_high, prev1 >> 4) &
+                                lookup16(first_low, prev1 & static_cast<unsigned char>(0x0f)) &
+                                lookup16(second_high, input >> 4);
+  const bytes16 third = __builtin_elementwise_sub_sat(
+      before<2>(input, previous), bytes16{} + static_cast<unsigned char>(0xe0 - 0x80));
+  const bytes16 fourth = __builtin_elementwise_sub_sat(
+      before<3>(input, previous), bytes16{} + static_cast<unsigned char>(0xf0 - 0x80));
+  return ((third | fourth) & static_cast<unsigned char>(0x80)) ^ special_cases;
+}
+
+[[gnu::target("ssse3")]] inline bool utf8_valid_ssse3(std::string_view text) {
+  bytes16 previous = {};
+  bytes16 errors = {};
+  std::size_t done = 0;
+  for (; done + 16 <= text.size(); done += 16) {
+    bytes16 input;
+    std::memcpy(&input, text.data() + done, 16);
+    errors |= block_errors(input, previous);
+    previous = input;
+  }
+  if (done != text.size()) {
+    bytes16 input = {};
+    std::memcpy(&input, text.data() + done, text.size() - done);
+    errors |= block_errors(input, previous);
+    previous = input;
+  }
+  errors |= block_errors(bytes16{}, previous);
+  return __builtin_reduce_or(errors) == 0;
+}
+
+inline bool has_ssse3() {
+  static const bool has = __builtin_cpu_supports("ssse3");
+  return has;
+}
+#endif
+
+// Whether a stretch is all characters as they are: well-formed UTF-8, and
+// neither U+FFFE nor U+FFFF, the two non-characters UTF-8 can say. False
+// where it cannot tell at once; the stretch is then read a character at a
+// time, which says where.
+inline bool all_characters(std::string_view text) {
+#if defined(__x86_64__) || defined(__i386__)
+  if (!has_ssse3() || !utf8_valid_ssse3(text)) return false;
+  return text.find("\xef\xbf\xbe") == std::string_view::npos &&
+         text.find("\xef\xbf\xbf") == std::string_view::npos;
+#else
+  static_cast<void>(text);
+  return false;
+#endif
+}
+
 }  // namespace runs
 
 // Text an event refers to, kept until the next event: copied into blocks that
@@ -466,6 +584,16 @@ class parser {
   constexpr std::optional<error> checked_characters(std::string_view in, std::size_t from,
                                                     std::size_t to, std::string& out) const {
     for (std::size_t at = from; at < to;) {
+      // A stretch up to the next control, UTF-8 checked 16 bytes at a time,
+      // appended at once.
+      if !consteval {
+        const std::size_t stop = runs::special(in, at, to);
+        if (stop - at >= 16 && runs::all_characters(in.substr(at, stop - at))) {
+          out.append(in.substr(at, stop - at));
+          at = stop;
+          continue;
+        }
+      }
       // ASCII that needs nothing done to it, appended as a run.
       if (const std::size_t run = runs::plain_ascii(in, at, to); run != at) {
         out.append(in.substr(at, run - at));

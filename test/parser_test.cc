@@ -177,3 +177,34 @@ TEST(Parser, FromRanges) {
     refused.push_back(one ? shown(*one) : shown(one.error()));
   EXPECT_EQ(refused, (shown_events{"S{}a[]", error(error_code::comment, 3)}));
 }
+
+namespace {
+
+// Long enough for the checks 16 bytes at a time, with what they must refuse
+// at every place.
+TEST(Parser, LongTextChecked) {
+  const auto read = [](const std::string& body) {
+    const std::string document = "<a>" + body + "</a>";
+    std::string text;
+    for (auto&& one : std::string_view(document) | chevron::events) {
+      if (!one) return std::optional<std::string>();
+      if (const auto* piece = std::get_if<chevron::text>(&*one)) text += piece->content;
+    }
+    return std::optional<std::string>(text);
+  };
+  const std::string cyrillic = "\xd0\x9f\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82 ";
+  for (std::size_t at = 0; at != 40; ++at) {
+    const std::string before = std::string(at, 'a') + cyrillic;
+    const std::string after = cyrillic + std::string(20, 'b');
+    EXPECT_EQ(read(before + "\xf0\x9f\x98\x80" + after), before + "\xf0\x9f\x98\x80" + after);
+    EXPECT_FALSE(read(before + "\xef\xbf\xbe" + after)) << at;  // U+FFFE
+    EXPECT_FALSE(read(before + "\xef\xbf\xbf" + after)) << at;  // U+FFFF
+    EXPECT_FALSE(read(before + "\xc0\x80" + after)) << at;      // overlong
+    EXPECT_FALSE(read(before + "\xed\xa0\x80" + after)) << at;  // a surrogate
+    EXPECT_FALSE(read(before + "\xd0" + after)) << at;          // cut short
+    EXPECT_FALSE(read(before + "\x01" + after)) << at;          // a control
+    EXPECT_EQ(read(before + "\r\n" + after), before + "\n" + after);
+  }
+}
+
+}  // namespace
