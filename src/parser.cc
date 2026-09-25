@@ -185,6 +185,44 @@ constexpr void encode(std::string& out, char32_t cp) {
 
 }  // namespace chevron::detail
 
+// How many bytes from `at` are ASCII characters that stand for themselves --
+// printable, a tab or a line feed -- found 32 bytes at a time where the text
+// is not being read while compiling: Clang's vector types, SSE or AVX on x86
+// and NEON on ARM from the same code.
+namespace runs {
+
+using bytes32 = unsigned char __attribute__((vector_size(32)));
+using flags32 = bool __attribute__((ext_vector_type(32)));
+
+inline std::uint32_t mask_of(auto flags) {
+  return __builtin_bit_cast(std::uint32_t, __builtin_convertvector(flags, flags32));
+}
+
+constexpr bool plain(unsigned char byte) {
+  return (byte >= 0x20 && byte < 0x80) || byte == '\t' || byte == '\n';
+}
+
+constexpr std::size_t plain_ascii(std::string_view in, std::size_t at, std::size_t to) {
+  std::size_t done = at;
+  if !consteval {
+    while (done + 32 <= to) {
+      bytes32 chunk;
+      std::memcpy(&chunk, in.data() + done, 32);
+      const std::uint32_t stop =
+          (mask_of(chunk < static_cast<unsigned char>(0x20)) &
+           ~mask_of(chunk == static_cast<unsigned char>('\t')) &
+           ~mask_of(chunk == static_cast<unsigned char>('\n'))) |
+          mask_of(chunk >= static_cast<unsigned char>(0x80));
+      if (stop != 0) return done + static_cast<std::size_t>(std::countr_zero(stop));
+      done += 32;
+    }
+  }
+  while (done < to && plain(static_cast<unsigned char>(in[done]))) ++done;
+  return done;
+}
+
+}  // namespace runs
+
 // Text an event refers to, kept until the next event: copied into blocks that
 // are never moved, so what was handed out stays where it is as more is kept,
 // and never freed until the parser is -- clearing only starts again at the
@@ -428,6 +466,12 @@ class parser {
   constexpr std::optional<error> checked_characters(std::string_view in, std::size_t from,
                                                     std::size_t to, std::string& out) const {
     for (std::size_t at = from; at < to;) {
+      // ASCII that needs nothing done to it, appended as a run.
+      if (const std::size_t run = runs::plain_ascii(in, at, to); run != at) {
+        out.append(in.substr(at, run - at));
+        at = run;
+        continue;
+      }
       const detail::decoded one = detail::decode(in.substr(0, to), at);
       if (one.length == 0)
         return error{error_code::ill_formed_utf8, base_ + at};
@@ -503,6 +547,7 @@ class parser {
     if (end == std::string_view::npos)
       return wait(in);
     std::string content;
+    content.reserve(end);  // what it will be, give or take the references
     for (std::size_t at = 0; at < end;) {
       if (in[at] == '&') {
         const auto after = reference(in, at, end, content);
@@ -513,9 +558,18 @@ class parser {
       }
       if (in.substr(at, 3) == "]]>")
         return fail(error_code::unexpected_character, at);
+      // Up to the next '&' or "]]>": looked for, not stepped to.
       std::size_t run = at;
-      while (run < end && in[run] != '&' && in.substr(run, 3) != "]]>")
+      for (;;) {
+        run = in.substr(0, end).find_first_of("&]", run);
+        if (run == std::string_view::npos) {
+          run = end;
+          break;
+        }
+        if (in[run] == '&' || in.substr(run, 3) == "]]>")
+          break;
         ++run;
+      }
       if (const auto bad = checked_characters(in, at, run, content))
         return std::unexpected(*bad);
       at = run;

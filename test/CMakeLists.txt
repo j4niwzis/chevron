@@ -37,3 +37,6 @@ add_test(NAME parser COMMAND chevron-parser-test)
 add_executable(chevron-read-test read_test.cc)
 target_link_libraries(chevron-read-test PRIVATE chevron ${chevron_gtest})
 add_test(NAME read COMMAND chevron-read-test)
+
+add_executable(chevron-bench-text bench/text.cc)
+target_link_libraries(chevron-bench-text PRIVATE chevron)
