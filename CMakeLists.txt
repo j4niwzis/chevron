@@ -49,12 +49,12 @@ endfunction()
 
 chevron_module(chevron_parser src/parser.cc)
 chevron_module(chevron_events src/events.cc chevron_parser)
-chevron_module(chevron_read src/read.cc chevron_parser Boost::pfr)
-chevron_module(chevron src/chevron.cc chevron_parser chevron_events chevron_read)
+chevron_module(chevron_typed src/typed.cc chevron_parser Boost::pfr)
+chevron_module(chevron src/chevron.cc chevron_parser chevron_events chevron_typed)
 
 add_library(chevron::parser ALIAS chevron_parser)
 add_library(chevron::events ALIAS chevron_events)
-add_library(chevron::read ALIAS chevron_read)
+add_library(chevron::typed ALIAS chevron_typed)
 add_library(chevron::chevron ALIAS chevron)
 
 if(CHEVRON_TESTS)

@@ -1,5 +1,5 @@
-// Typed reading: XML read straight into plain structs, with no document
-// object model between. A struct says nothing about XML; its schema, found
+// Typed reading and writing: XML read straight into plain structs, and
+// written from them, with no document object model between. A struct says nothing about XML; its schema, found
 // by argument-dependent lookup beside it, does:
 //
 //   namespace chat {
@@ -15,7 +15,7 @@
 // Member names come from Boost.PFR. A member a schema does not mention is a
 // child element: by its own schema where its type has one, holding text
 // where it does not; std::optional may be absent, std::vector may repeat.
-export module chevron.read;
+export module chevron.typed;
 
 import std;
 import boost.pfr;
@@ -311,6 +311,21 @@ struct described_member {
     return schema.bound[I].local.empty() ? names[I] : schema.bound[I].local;
   }
 
+  // A child element's name: its local part, and its namespace where it is not
+  // the parent's.
+  template <std::size_t I>
+  static constexpr std::pair<std::string_view, std::optional<std::string_view>> child_name() {
+    using one = element_of<member_type<I>>;
+    constexpr members::descriptor said = schema.bound[I];
+    if constexpr (kind_of<I>() == members::kind::child) {
+      constexpr auto inner = xml_schema(type<one>{});
+      if constexpr (inner.named)
+        return {said.local.empty() ? inner.local : said.local,
+                said.uri ? said.uri : std::optional<std::string_view>(inner.uri)};
+    }
+    return {local_of<I>(), said.uri};
+  }
+
   template <std::size_t I>
   static constexpr void check() {
     using held = member_type<I>;
@@ -412,8 +427,9 @@ constexpr std::expected<T, read_error> read_element(Source& source, const start_
         if constexpr (what == members::kind::child || what == members::kind::child_text) {
           if (claimed || failure)
             return;
-          const std::string_view uri = info::schema.bound[K].uri.value_or(std::string_view(parent_uri));
-          if (child_local != info::template local_of<K>() || child_uri != uri)
+          constexpr auto name = info::template child_name<K>();
+          const std::string_view uri = name.second.value_or(std::string_view(parent_uri));
+          if (child_local != name.first || child_uri != uri)
             return;
           claimed = true;
           seen[K] = true;
@@ -472,7 +488,7 @@ constexpr std::expected<T, read_error> read_element(Source& source, const start_
       if constexpr ((what == members::kind::child || what == members::kind::child_text) &&
                     !is_optional<held>::value && !is_vector<held>::value)
         if (!seen[K] && !failure)
-          failure = read_error{read_code::missing_child, std::string(info::template local_of<K>()), std::nullopt};
+          failure = read_error{read_code::missing_child, std::string(info::template child_name<K>().first), std::nullopt};
     };
     (one(std::integral_constant<std::size_t, I>{}), ...);
   }(std::make_index_sequence<count>{});
@@ -567,6 +583,252 @@ template <described... T, std::ranges::input_range Range>
 constexpr std::expected<std::variant<T...>, read_error> read_one_of(Range&& events) {
   detail::reading::range_source<std::remove_reference_t<Range>> source(events);
   return read_one_of<T...>(source);
+}
+
+}  // namespace chevron
+
+namespace chevron::detail::writing {
+
+using reading::element_of;
+using reading::is_optional;
+using reading::is_vector;
+using reading::described_member;
+
+template <class Out>
+constexpr void put(Out& out, std::string_view text) {
+  for (const char one : text)
+    *out++ = one;
+}
+
+// Character data: what would end it or start markup, as references.
+template <class Out>
+constexpr void put_text(Out& out, std::string_view text) {
+  for (const char one : text) {
+    if (one == '&')
+      put(out, "&amp;");
+    else if (one == '<')
+      put(out, "&lt;");
+    else if (one == '>')
+      put(out, "&gt;");
+    else if (one == '\r')
+      put(out, "&#xD;");
+    else
+      *out++ = one;
+  }
+}
+
+// An attribute value in double quotes: white space other than a space as
+// references too, which attribute-value normalization would otherwise turn
+// into spaces.
+template <class Out>
+constexpr void put_value(Out& out, std::string_view text) {
+  for (const char one : text) {
+    if (one == '&')
+      put(out, "&amp;");
+    else if (one == '<')
+      put(out, "&lt;");
+    else if (one == '"')
+      put(out, "&quot;");
+    else if (one == '\t')
+      put(out, "&#x9;");
+    else if (one == '\n')
+      put(out, "&#xA;");
+    else if (one == '\r')
+      put(out, "&#xD;");
+    else
+      *out++ = one;
+  }
+}
+
+template <class T>
+constexpr std::string text_of(const T& value) {
+  if constexpr (std::same_as<T, std::string>) {
+    return value;
+  } else if constexpr (std::same_as<T, bool>) {
+    return value ? "true" : "false";
+  } else {
+    std::array<char, 64> digits{};
+    const auto [end, problem] = std::to_chars(digits.data(), digits.data() + digits.size(), value);
+    return std::string(digits.data(), end);
+  }
+}
+
+// The start of an element: its name, a default namespace declaration where
+// it is not the one in effect, and its attributes, each in a namespace with a
+// prefix of its own -- xml for the XML namespace, declared otherwise.
+template <class Out>
+constexpr void open(Out& out, std::string_view uri, std::string_view local, std::string_view in_effect,
+                    const std::vector<std::tuple<std::string_view, std::string_view, std::string>>& attributes) {
+  *out++ = '<';
+  put(out, local);
+  if (uri != in_effect) {
+    put(out, " xmlns=\"");
+    put_value(out, uri);
+    *out++ = '"';
+  }
+  std::size_t prefixes = 0;
+  for (const auto& [attribute_uri, attribute_local, value] : attributes) {
+    *out++ = ' ';
+    if (attribute_uri == std::string_view("http://www.w3.org/XML/1998/namespace")) {
+      put(out, "xml:");
+    } else if (!attribute_uri.empty()) {
+      const std::string prefix = "a" + std::to_string(prefixes++);
+      put(out, "xmlns:");
+      put(out, prefix);
+      put(out, "=\"");
+      put_value(out, attribute_uri);
+      put(out, "\" ");
+      put(out, prefix);
+      *out++ = ':';
+    }
+    put(out, attribute_local);
+    put(out, "=\"");
+    put_value(out, value);
+    *out++ = '"';
+  }
+}
+
+template <class Out>
+constexpr void write_any(Out& out, const any& element, std::string_view in_effect) {
+  std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
+  for (const auto& [name, value] : element.attributes)
+    attributes.emplace_back(name.first, name.second, value);
+  open(out, element.uri, element.local, in_effect, attributes);
+  if (element.children.empty()) {
+    put(out, "/>");
+    return;
+  }
+  *out++ = '>';
+  for (const any_node& child : element.children) {
+    if (const auto* text = std::get_if<std::string>(&child.value))
+      put_text(out, *text);
+    else
+      write_any(out, std::get<any>(child.value), element.uri);
+  }
+  put(out, "</");
+  put(out, element.local);
+  *out++ = '>';
+}
+
+template <class T, class Out>
+constexpr void write_element(Out& out, const T& value, std::string_view uri, std::string_view local,
+                             std::string_view in_effect);
+
+// One occurrence of a child member.
+template <class One, members::kind What, class Out>
+constexpr void write_child(Out& out, const One& value, std::string_view uri, std::string_view local,
+                           std::string_view in_effect) {
+  if constexpr (What == members::kind::child) {
+    write_element(out, value, uri, local, in_effect);
+  } else {
+    open(out, uri, local, in_effect, {});
+    *out++ = '>';
+    put_text(out, text_of(value));
+    put(out, "</");
+    put(out, local);
+    *out++ = '>';
+  }
+}
+
+template <class T, class Out>
+constexpr void write_element(Out& out, const T& value, std::string_view uri, std::string_view local,
+                             std::string_view in_effect) {
+  using info = described_member<T>;
+  constexpr std::size_t count = info::schema.count;
+  std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
+  bool has_content = false;
+  [&]<std::size_t... I>(std::index_sequence<I...>) {
+    (info::template check<I>(), ...);
+    const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
+      constexpr members::kind what = info::template kind_of<K>();
+      const auto& member = boost::pfr::get<K>(value);
+      using held = std::remove_cvref_t<decltype(member)>;
+      if constexpr (what == members::kind::attribute) {
+        const std::string_view attribute_uri = info::schema.bound[K].uri.value_or(std::string_view());
+        if constexpr (is_optional<held>::value) {
+          if (member)
+            attributes.emplace_back(attribute_uri, info::template local_of<K>(), text_of(*member));
+        } else {
+          attributes.emplace_back(attribute_uri, info::template local_of<K>(), text_of(member));
+        }
+      } else if constexpr (is_optional<held>::value) {
+        has_content = has_content || member.has_value();
+      } else if constexpr (is_vector<held>::value) {
+        has_content = has_content || !member.empty();
+      } else if constexpr (what == members::kind::text) {
+        has_content = has_content || !text_of(member).empty();
+      } else {
+        has_content = true;
+      }
+    };
+    (one(std::integral_constant<std::size_t, I>{}), ...);
+  }(std::make_index_sequence<count>{});
+
+  open(out, uri, local, in_effect, attributes);
+  if (!has_content) {
+    put(out, "/>");
+    return;
+  }
+  *out++ = '>';
+  [&]<std::size_t... I>(std::index_sequence<I...>) {
+    const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
+      constexpr members::kind what = info::template kind_of<K>();
+      const auto& member = boost::pfr::get<K>(value);
+      using held = std::remove_cvref_t<decltype(member)>;
+      using one_value = element_of<held>;
+      if constexpr (what == members::kind::text) {
+        if constexpr (is_optional<held>::value) {
+          if (member)
+            put_text(out, text_of(*member));
+        } else {
+          put_text(out, text_of(member));
+        }
+      } else if constexpr (what == members::kind::unknown_children) {
+        for (const any& kept : member)
+          write_any(out, kept, uri);
+      } else if constexpr (what == members::kind::child || what == members::kind::child_text) {
+        constexpr auto name = info::template child_name<K>();
+        const std::string_view child_uri = name.second.value_or(uri);
+        const std::string_view child_local = name.first;
+        if constexpr (is_optional<held>::value) {
+          if (member)
+            write_child<one_value, what>(out, *member, child_uri, child_local, uri);
+        } else if constexpr (is_vector<held>::value) {
+          for (const auto& each : member)
+            write_child<one_value, what>(out, each, child_uri, child_local, uri);
+        } else {
+          write_child<one_value, what>(out, member, child_uri, child_local, uri);
+        }
+      }
+    };
+    (one(std::integral_constant<std::size_t, I>{}), ...);
+  }(std::make_index_sequence<count>{});
+  put(out, "</");
+  put(out, local);
+  *out++ = '>';
+}
+
+}  // namespace chevron::detail::writing
+
+export namespace chevron {
+
+// A value written as XML by its schema, to an output iterator of char: the
+// element with a default namespace declaration where it has a namespace,
+// attributes, then its members in order. Where it ends is returned.
+template <described T, std::output_iterator<char> Out>
+constexpr Out write(Out out, const T& value) {
+  constexpr auto schema = xml_schema(type<T>{});
+  static_assert(schema.named, "chevron: a type written on its own needs .name() in its schema");
+  detail::writing::write_element(out, value, schema.uri, schema.local, std::string_view());
+  return out;
+}
+
+// The same, as a string.
+template <described T>
+constexpr std::string to_xml(const T& value) {
+  std::string out;
+  write(std::back_inserter(out), value);
+  return out;
 }
 
 }  // namespace chevron

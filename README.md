@@ -33,9 +33,10 @@ Namespaces that RFC 6120, section 11, allows, read from bytes as they arrive.
 What an event refers to -- names, values, text -- stays valid until the next
 call.
 
-## Typed reading
+## Typed reading and writing
 
-XML read straight into plain structs, with no document object model between.
+XML read straight into plain structs, and written from them, with no document
+object model between.
 The struct says nothing about XML; its schema, found by argument-dependent
 lookup beside it, does:
 
@@ -72,6 +73,11 @@ auto s = chevron::read_one_of<chat::message, chat::presence>(parser);
   absent; `std::vector` may repeat.
 - Checked at compile time: one descriptor per member, no member described
   twice, and a descriptor that fits its member's type.
+- Writing is the same schema the other way: `chevron::write(out, value)` to
+  an output iterator of `char`, or `chevron::to_xml(value)` -- namespaces
+  declared where they change, values escaped, what was kept as
+  `chevron::any` written back as it came, and what is written read back as
+  the same value.
 - Errors say what and where: a missing attribute or child, a value that is
   not one, an element other than the one asked for, input that ran out, or
   the parser's own error.

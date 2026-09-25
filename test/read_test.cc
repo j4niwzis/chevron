@@ -155,3 +155,44 @@ TEST(Read, FromAParserFedAsBytesArrive) {
   ASSERT_TRUE(broken.error().parse_error.has_value());
   EXPECT_EQ(broken.error().parse_error->code, chevron::error_code::comment);
 }
+
+TEST(Write, ExactOutput) {
+  const chat::message m{"juliet", "romeo", std::nullopt, "a < b & \"c\"", {}};
+  EXPECT_EQ(chevron::to_xml(m),
+            "<message xmlns=\"urn:example:client\" to=\"juliet\" from=\"romeo\">"
+            "<body>a &lt; b &amp; \"c\"</body></message>");
+  // Attribute values keep their white space and quotes.
+  const chat::message odd{"a\"b\tc", "x", "chat", std::nullopt, {}};
+  EXPECT_EQ(chevron::to_xml(odd),
+            "<message xmlns=\"urn:example:client\" to=\"a&quot;b&#x9;c\" from=\"x\" type=\"chat\"/>");
+}
+
+// Written, then read back: the same value, for every kind of member.
+TEST(Write, ReadBackTheSame) {
+  chat::query q;
+  q.items.push_back({"nurse", 2, {"Capulets", "Servants"}});
+  q.items.push_back({"romeo", 1, {}});
+  const std::string written = chevron::to_xml(q);
+  const auto back = chevron::read<chat::query>(std::string_view(written) | chevron::events);
+  ASSERT_TRUE(back.has_value()) << written;
+  ASSERT_EQ(back->items.size(), 2u);
+  EXPECT_EQ(back->items[0].jid, "nurse");
+  EXPECT_EQ(back->items[0].order, 2);
+  EXPECT_EQ(back->items[0].group, (std::vector<std::string>{"Capulets", "Servants"}));
+  EXPECT_EQ(back->items[1].group.size(), 0u);
+
+  // An extension kept whole is written back as it came, namespace and all.
+  const std::string_view in =
+      "<message xmlns=\"urn:example:client\" to=\"a\" from=\"b\"><body>hi</body>"
+      "<x xmlns=\"urn:example:x\" a=\"1\">kept <y/></x></message>";
+  const auto m = chevron::read<chat::message>(in | chevron::events);
+  ASSERT_TRUE(m.has_value());
+  EXPECT_EQ(chevron::to_xml(*m), in);
+
+  const chat::presence p{"away", 5};
+  const std::string presence = chevron::to_xml(p);
+  const auto p_back = chevron::read<chat::presence>(std::string_view(presence) | chevron::events);
+  ASSERT_TRUE(p_back.has_value()) << presence;
+  EXPECT_EQ(p_back->show, p.show);
+  EXPECT_EQ(p_back->priority, p.priority);
+}
