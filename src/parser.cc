@@ -185,6 +185,44 @@ constexpr void encode(std::string& out, char32_t cp) {
 
 }  // namespace chevron::detail
 
+// Text an event refers to, kept until the next event: copied into blocks that
+// are never moved, so what was handed out stays where it is as more is kept,
+// and never freed until the parser is -- clearing only starts again at the
+// first block, so a parser that has run a while allocates nothing more. A
+// deque of strings did the first; it did not do the second, and it is not
+// constexpr.
+class text_store {
+ public:
+  constexpr std::string_view keep(std::string_view text) {
+    for (; block_ != blocks_.size(); ++block_, used_ = 0) {
+      if (sizes_[block_] - used_ >= text.size()) return put(text);
+    }
+    const std::size_t size = std::max(text.size(), std::size_t{4096});
+    blocks_.push_back(std::make_unique<char[]>(size));
+    sizes_.push_back(size);
+    used_ = 0;
+    return put(text);
+  }
+
+  constexpr void clear() {
+    block_ = 0;
+    used_ = 0;
+  }
+
+ private:
+  constexpr std::string_view put(std::string_view text) {
+    char* const at = blocks_[block_].get() + used_;
+    std::ranges::copy(text, at);
+    used_ += text.size();
+    return {at, text.size()};
+  }
+
+  std::vector<std::unique_ptr<char[]>> blocks_;
+  std::vector<std::size_t> sizes_;
+  std::size_t block_ = 0;
+  std::size_t used_ = 0;
+};
+
 export namespace chevron {
 
 class parser {
@@ -235,9 +273,8 @@ class parser {
   }
 
   // Somewhere lasting for a string an event refers to, until the next call.
-  constexpr std::string_view keep(std::string text) {
-    kept_.push_back(std::make_unique<std::string>(std::move(text)));
-    return *kept_.back();
+  constexpr std::string_view keep(std::string_view text) {
+    return kept_.keep(text);
   }
 
   constexpr std::optional<std::string_view> uri_of(std::string_view prefix) const {
@@ -702,9 +739,7 @@ class parser {
   std::vector<open_element> open_;
   std::vector<std::pair<std::string, std::string>> bindings_;  // prefix, URI
   std::vector<attribute> attributes_;
-  // Each on its own, so that what was handed out stays where it is as more
-  // are kept: a deque would do that too, but a deque is not constexpr.
-  std::vector<std::unique_ptr<std::string>> kept_;
+  text_store kept_;
 };
 
 }  // namespace chevron
