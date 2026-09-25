@@ -10,6 +10,17 @@ project(chevron VERSION 0.1 LANGUAGES CXX)
 
 option(CHEVRON_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
 
+# Dependencies come from cmake-everywhere, asked for without it being
+# installed as the dependency provider: which provider a build has is for
+# whoever builds chevron.
+if(NOT COMMAND cme_find_package)
+  set(CME_WITHOUT_PROVIDER ON)
+  include(${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
+endif()
+# Boost.PFR, as a module: the names and the members of an aggregate, for the
+# typed reading.
+cme_find_package(boost_pfr COMPONENTS modules REQUIRED)
+
 # The bound on the steps of one constant evaluation, for chevron and what
 # imports it.
 set(CHEVRON_CONSTEXPR_STEPS 100000000 CACHE STRING
@@ -38,10 +49,12 @@ endfunction()
 
 chevron_module(chevron_parser src/parser.cc)
 chevron_module(chevron_events src/events.cc chevron_parser)
-chevron_module(chevron src/chevron.cc chevron_parser chevron_events)
+chevron_module(chevron_read src/read.cc chevron_parser Boost::pfr)
+chevron_module(chevron src/chevron.cc chevron_parser chevron_events chevron_read)
 
 add_library(chevron::parser ALIAS chevron_parser)
 add_library(chevron::events ALIAS chevron_events)
+add_library(chevron::read ALIAS chevron_read)
 add_library(chevron::chevron ALIAS chevron)
 
 if(CHEVRON_TESTS)

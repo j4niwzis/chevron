@@ -2,6 +2,14 @@
   "about": "Written by cmake-everywhere. Commit this file. Every value is a fact about something outside this project that has to stay true: the commit a library was fetched at, the digest of an archive, and the digest of a port file read from somewhere else. Configure with -DCME_LOCK_ALL=ON to write it again.",
   "lock": 1,
   "ports": {
+    "boost-pfr": {
+      "commit": "401385c240027423acbb1eb6dea2abe0043db5aa",
+      "port": [
+        "2861b39aab8b9c03459c4acd7de49c9f61fea9458533254ee32f98b2b9d8b384"
+      ],
+      "url": "https://github.com/boostorg/pfr.git",
+      "version": "1.92.0"
+    },
     "cmake-everywhere": {
       "version": "v0.2.4"
     },
