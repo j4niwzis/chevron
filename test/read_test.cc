@@ -302,3 +302,51 @@ TEST(Read, KeptAttributes) {
 }
 
 }  // namespace
+
+namespace chat {
+
+struct normal {
+  static constexpr std::string_view xml_value = "normal";
+};
+struct chat_type {
+  static constexpr std::string_view xml_value = "chat";
+};
+struct groupchat {
+  static constexpr std::string_view xml_value = "groupchat";
+};
+
+struct typed_note {
+  std::optional<std::variant<normal, chat_type, groupchat>> type;
+  std::optional<std::string> body;
+};
+
+constexpr auto xml_schema(chevron::type<typed_note>) {
+  using namespace chevron::members;
+  return chevron::schema<typed_note>()
+      .name("urn:example:client", "note")
+      .member<"type">(attribute())
+      .member<"body">(child_text());
+}
+
+}  // namespace chat
+
+namespace {
+
+TEST(Read, ChoiceAttribute) {
+  const auto got = chevron::read<chat::typed_note>(
+      std::string_view(R"(<note xmlns="urn:example:client" type="groupchat"><body>x</body></note>)") |
+      chevron::events);
+  ASSERT_TRUE(got.has_value());
+  ASSERT_TRUE(got->type);
+  EXPECT_TRUE(std::holds_alternative<chat::groupchat>(*got->type));
+  EXPECT_EQ(chevron::to_xml(*got) | std::ranges::to<std::string>(),
+            R"(<note xmlns="urn:example:client" type="groupchat"><body>x</body></note>)");
+  const auto none = chevron::read<chat::typed_note>(
+      std::string_view(R"(<note xmlns="urn:example:client"/>)") | chevron::events);
+  ASSERT_TRUE(none.has_value());
+  EXPECT_FALSE(none->type);
+  EXPECT_FALSE(chevron::read<chat::typed_note>(
+      std::string_view(R"(<note xmlns="urn:example:client" type="bogus"/>)") | chevron::events));
+}
+
+}  // namespace

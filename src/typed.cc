@@ -189,9 +189,18 @@ using element_of = typename std::conditional_t<
     is_optional<T>::value, is_optional<T>,
     std::conditional_t<is_vector<T>::value, is_vector<T>, std::type_identity<T>>>::type;
 
+// A choice among empty types, each naming the text it stands for:
+//   struct chat { static constexpr std::string_view xml_value = "chat"; };
+//   std::variant<normal, chat, groupchat, headline, error> type;
+template <class T>
+struct is_choice : std::false_type {};
+template <class... Alternatives>
+  requires(requires { std::string_view(Alternatives::xml_value); } && ...)
+struct is_choice<std::variant<Alternatives...>> : std::true_type {};
+
 template <class T>
 concept text_like = std::same_as<T, std::string> || std::same_as<T, bool> ||
-                    (std::is_arithmetic_v<T> && !std::same_as<T, char>);
+                    (std::is_arithmetic_v<T> && !std::same_as<T, char>) || is_choice<T>::value;
 
 template <class T>
 constexpr std::optional<T> value_of(std::string_view text) {
@@ -203,6 +212,16 @@ constexpr std::optional<T> value_of(std::string_view text) {
     if (text == "false" || text == "0")
       return false;
     return std::nullopt;
+  } else if constexpr (is_choice<T>::value) {
+    // The alternative that names this text.
+    std::optional<T> out;
+    [&]<std::size_t... At>(std::index_sequence<At...>) {
+      (void)((text == std::variant_alternative_t<At, T>::xml_value
+                  ? (out.emplace(std::in_place_index<At>), true)
+                  : false) ||
+             ...);
+    }(std::make_index_sequence<std::variant_size_v<T>>{});
+    return out;
   } else {
     T out{};
     const auto [end, problem] = std::from_chars(text.data(), text.data() + text.size(), out);
@@ -674,6 +693,8 @@ constexpr std::string text_of(const T& value) {
     return value;
   } else if constexpr (std::same_as<T, bool>) {
     return value ? "true" : "false";
+  } else if constexpr (reading::is_choice<T>::value) {
+    return std::visit([](const auto& one) { return std::string(one.xml_value); }, value);
   } else {
     std::array<char, 64> digits{};
     const auto [end, problem] = std::to_chars(digits.data(), digits.data() + digits.size(), value);
