@@ -398,6 +398,11 @@ class parser {
   // The input has ended: what is still open is an error, not a wait.
   constexpr void finish() noexcept { finished_ = true; }
 
+  // What was fed and not read yet. Where a new document follows in the same
+  // bytes -- an XMPP stream restarted after authentication -- it is fed to
+  // the parser that reads that one.
+  constexpr std::string_view unread() const noexcept { return std::string_view(buffer_).substr(at_); }
+
   // The next event; nothing where the input fed so far holds no complete one
   // -- or, after finish(), where the document is over; or the error. After
   // an error, the same error again.

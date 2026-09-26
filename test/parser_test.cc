@@ -156,6 +156,16 @@ TEST(Parser, TheSameHoweverItIsSplit) {
   }
 }
 
+// What was fed past the end of what was read, for the parser of the next
+// document.
+TEST(Parser, Unread) {
+  chevron::parser p;
+  p.feed(std::string_view("<a/><?xml version='1.0'?><b"));
+  ASSERT_TRUE(p.next().has_value());  // <a>
+  ASSERT_TRUE(p.next().has_value());  // </a>
+  EXPECT_EQ(p.unread(), "<?xml version='1.0'?><b");
+}
+
 TEST(Parser, FromRanges) {
   const std::string document = "<a x='1'>hi<b/></a>";
   std::vector<std::string> from_view;
