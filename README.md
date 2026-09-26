@@ -1,6 +1,6 @@
 # chevron
 
-The XML of streams, for C++23, as modules: the subset of XML 1.0 with
+The XML of streams, for C++26, as modules: the subset of XML 1.0 with
 Namespaces that RFC 6120, section 11, allows, read from bytes as they arrive.
 
 - **Events, pulled.** A `chevron::parser` is fed bytes in pieces of any size
@@ -121,7 +121,7 @@ Tested under AddressSanitizer and UndefinedBehaviorSanitizer as well.
 
 ## Building
 
-CMake 4.3.4 or newer, Ninja, and a compiler that builds C++23 modules with
+CMake 4.3.4 or newer, Ninja, and a compiler that builds C++26 modules with
 `import std`: clang 22 or 23 with libc++. Boost.PFR and, for the tests,
 googletest come through cmake-everywhere.
 
