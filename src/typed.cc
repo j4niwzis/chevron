@@ -51,9 +51,53 @@ struct any_node {
   std::variant<any, std::string> value;  // an element, or text
 };
 
+// One of several element types, chosen by the element's name -- the one each
+// alternative's schema gives, with its .when<>() where it has one -- and read
+// straight into that type: no tree on the way. chevron::any, last, takes an
+// element no alternative names; it is the only tree there is.
+//   std::vector<chevron::tagged<delay, chat_state, chevron::any>> extensions;
+template <class... Alternatives>
+  requires(sizeof...(Alternatives) > 0)
+class tagged {
+  static_assert(
+      [] {
+        constexpr bool kept[] = {std::same_as<Alternatives, any>...};
+        for (std::size_t at = 0; at + 1 < sizeof...(Alternatives); ++at)
+          if (kept[at])
+            return false;
+        return true;
+      }(),
+      "chevron: chevron::any may only be the last alternative of a tagged");
+
+ public:
+  constexpr tagged() = default;
+  template <class T>
+    requires(std::same_as<std::remove_cvref_t<T>, Alternatives> || ...)
+  constexpr tagged(T&& value) : data_(std::forward<T>(value)) {}
+
+  template <class T>
+  constexpr bool is() const noexcept { return std::holds_alternative<T>(data_); }
+  template <class T>
+  constexpr T& as() { return std::get<T>(data_); }
+  template <class T>
+  constexpr const T& as() const { return std::get<T>(data_); }
+  template <class T>
+  constexpr T* get_if() noexcept { return std::get_if<T>(&data_); }
+  template <class T>
+  constexpr const T* get_if() const noexcept { return std::get_if<T>(&data_); }
+  constexpr std::variant<Alternatives...>& data() noexcept { return data_; }
+  constexpr const std::variant<Alternatives...>& data() const noexcept { return data_; }
+
+ private:
+  std::variant<Alternatives...> data_;
+};
+
 namespace members {
 
-enum class kind : std::uint8_t { deduced, attribute, child_text, child, text, unknown_children, unknown_attributes };
+enum class kind : std::uint8_t {
+  deduced, attribute, child_text, child, text, unknown_children, unknown_attributes,
+  tagged  // a chevron::tagged: a child chosen by its name
+};
 
 // What a member is in XML, and its name there where it is not the member's.
 struct descriptor {
@@ -210,6 +254,9 @@ using element_of = typename std::conditional_t<
     is_optional<T>::value, is_optional<T>,
     std::conditional_t<is_vector<T>::value, is_vector<T>, std::type_identity<T>>>::type;
 
+template <class T> struct is_tagged : std::false_type {};
+template <class... A> struct is_tagged<tagged<A...>> : std::true_type {};
+
 // A choice among empty types, each naming the text it stands for:
 //   struct chat { static constexpr std::string_view xml_value = "chat"; };
 //   std::variant<normal, chat, groupchat, headline, error> type;
@@ -329,6 +376,11 @@ constexpr std::expected<std::string, read_error> text_content(Source& source, st
 template <class T, class Source>
 constexpr std::expected<T, read_error> read_element(Source& source, const start_element& start);
 
+// The alternative of a tagged that names the element, read; nothing where
+// none does.
+template <class Tagged, class Source>
+constexpr std::optional<std::expected<Tagged, read_error>> read_tagged(Source& source, const start_element& start);
+
 template <class T>
 struct described_member {
   static constexpr auto schema = xml_schema(type<T>{});
@@ -343,6 +395,8 @@ struct described_member {
     constexpr members::kind said = schema.bound[I].what;
     if constexpr (said != members::kind::deduced) {
       return said;
+    } else if constexpr (is_tagged<element_of<member_type<I>>>::value) {
+      return members::kind::tagged;
     } else {
       using one = element_of<member_type<I>>;
       static_assert(described<one> || text_like<one>,
@@ -522,6 +576,20 @@ constexpr std::expected<T, read_error> read_element(Source& source, const start_
                 store(member, std::move(*value));
             }
           }
+        } else if constexpr (what == members::kind::tagged) {
+          if (claimed || failure)
+            return;
+          auto& member = boost::pfr::get<K>(out);
+          using held = std::remove_cvref_t<decltype(member)>;
+          auto value = read_tagged<element_of<held>>(source, child);
+          if (!value)
+            return;  // no alternative names it
+          claimed = true;
+          seen[K] = true;
+          if (!*value)
+            failure = value->error();
+          else
+            store(member, std::move(**value));
         }
       };
       (one(std::integral_constant<std::size_t, I>{}), ...);
@@ -553,7 +621,8 @@ constexpr std::expected<T, read_error> read_element(Source& source, const start_
     const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
       constexpr members::kind what = info::template kind_of<K>();
       using held = typename info::template member_type<K>;
-      if constexpr ((what == members::kind::child || what == members::kind::child_text) &&
+      if constexpr ((what == members::kind::child || what == members::kind::child_text ||
+                     what == members::kind::tagged) &&
                     !is_optional<held>::value && !is_vector<held>::value)
         if (!seen[K] && !failure)
           failure = read_error{read_code::missing_child, std::string(info::template child_name<K>().first), std::nullopt};
@@ -577,6 +646,36 @@ constexpr bool is_named(const start_element& start) {
     return schema.when_absent;
   }
   return true;
+}
+
+template <class Tagged, class Source>
+constexpr std::optional<std::expected<Tagged, read_error>> read_tagged(Source& source, const start_element& start) {
+  std::optional<std::expected<Tagged, read_error>> out;
+  [&]<class... A>(type<tagged<A...>>) {
+    const auto try_one = [&]<class One>(type<One>) {
+      if (out)
+        return;
+      if constexpr (std::same_as<One, any>) {
+        auto kept = capture(source, start);
+        if (kept)
+          out.emplace(Tagged(std::move(*kept)));
+        else
+          out.emplace(std::unexpected(kept.error()));
+      } else {
+        static_assert(described<One> && xml_schema(type<One>{}).named,
+                      "chevron: an alternative of a tagged needs a schema that names its element");
+        if (!is_named<One>(start))
+          return;
+        auto value = read_element<One>(source, start);
+        if (value)
+          out.emplace(Tagged(std::move(*value)));
+        else
+          out.emplace(std::unexpected(value.error()));
+      }
+    };
+    (try_one(type<A>{}), ...);
+  }(type<Tagged>{});
+  return out;
 }
 
 // A range of events -- std::expected<event, error> each, as text | events
@@ -887,6 +986,28 @@ constexpr void write_element(Out& out, const T& value, std::string_view uri, std
       } else if constexpr (what == members::kind::unknown_children) {
         for (const any& kept : member)
           write_any(out, kept, uri);
+      } else if constexpr (what == members::kind::tagged) {
+        const auto write_one = [&](const one_value& each) {
+          std::visit(
+              [&]<class One>(const One& alternative) {
+                if constexpr (std::same_as<One, any>) {
+                  write_any(out, alternative, uri);
+                } else {
+                  constexpr auto inner = xml_schema(type<One>{});
+                  write_element(out, alternative, inner.uri, inner.local, uri);
+                }
+              },
+              each.data());
+        };
+        if constexpr (is_optional<held>::value) {
+          if (member)
+            write_one(*member);
+        } else if constexpr (is_vector<held>::value) {
+          for (const auto& each : member)
+            write_one(each);
+        } else {
+          write_one(member);
+        }
       } else if constexpr (what == members::kind::child || what == members::kind::child_text) {
         constexpr auto name = info::template child_name<K>();
         const std::string_view child_uri = name.second.value_or(uri);
@@ -1163,7 +1284,18 @@ class element_frame final : public frame {
       ++index_;
       constexpr auto name = info::template child_name<K>();
       const std::string_view child_uri = name.second.value_or(uri_);
-      if constexpr (what == members::kind::child) {
+      if constexpr (what == members::kind::tagged) {
+        return std::visit(
+            [&]<class One>(const One& alternative) -> std::optional<step> {
+              if constexpr (std::same_as<One, any>) {
+                return child(std::make_unique<any_frame>(alternative, uri_));
+              } else {
+                constexpr auto inner = xml_schema(chevron::type<One>{});
+                return child(std::make_unique<element_frame<One>>(alternative, inner.uri, inner.local, uri_));
+              }
+            },
+            occurrence->data());
+      } else if constexpr (what == members::kind::child) {
         return child(std::make_unique<element_frame<one_value>>(*occurrence, child_uri, name.first, uri_));
       } else {
         buffer_ = start_tag(child_uri, name.first, uri_, {}, false);

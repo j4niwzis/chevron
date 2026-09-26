@@ -399,3 +399,80 @@ TEST(Read, TellingAttribute) {
 }
 
 }  // namespace
+
+namespace tagged_test {
+struct version {
+  std::string name;
+  std::string version;
+};
+constexpr auto xml_schema(chevron::type<version>) {
+  return chevron::schema<version>().name("jabber:iq:version", "query");
+}
+struct delay {
+  std::string stamp;
+};
+constexpr auto xml_schema(chevron::type<delay>) {
+  using namespace chevron::members;
+  return chevron::schema<delay>().name("urn:xmpp:delay", "delay").member<"stamp">(attribute());
+}
+struct result {
+  std::optional<std::string> id;
+  chevron::tagged<version, delay, chevron::any> payload;
+};
+constexpr auto xml_schema(chevron::type<result>) {
+  using namespace chevron::members;
+  return chevron::schema<result>().name("jabber:client", "iq").member<"id">(attribute());
+}
+struct note {
+  std::string body;
+  std::vector<chevron::tagged<delay, chevron::any>> extensions;
+};
+constexpr auto xml_schema(chevron::type<note>) { return chevron::schema<note>().name("jabber:client", "message"); }
+}  // namespace tagged_test
+
+// A child chosen by its name and read straight into its type; chevron::any
+// only for what no alternative names; written back as it was.
+TEST(Read, Tagged) {
+  using namespace tagged_test;
+  const auto answer = chevron::read<result>(
+      events("<iq xmlns='jabber:client' id='v1'><query xmlns='jabber:iq:version'><name>ejabberd</name>"
+             "<version>26.7.0</version></query></iq>"));
+  ASSERT_TRUE(answer.has_value());
+  ASSERT_TRUE(answer->payload.is<version>());
+  EXPECT_EQ(answer->payload.as<version>().version, "26.7.0");
+
+  const auto other = chevron::read<result>(events("<iq xmlns='jabber:client' id='p'><ping xmlns='urn:xmpp:ping'/></iq>"));
+  ASSERT_TRUE(other.has_value());
+  ASSERT_TRUE(other->payload.is<chevron::any>());
+  EXPECT_EQ(other->payload.as<chevron::any>().local, "ping");
+
+  const auto missing = chevron::read<result>(events("<iq xmlns='jabber:client' id='e'/>"));
+  EXPECT_FALSE(missing.has_value());
+
+  const auto message = chevron::read<note>(
+      events("<message xmlns='jabber:client'><body>hi</body><delay xmlns='urn:xmpp:delay' stamp='2002-09-10T23:08:25Z'/>"
+             "<active xmlns='http://jabber.org/protocol/chatstates'/></message>"));
+  ASSERT_TRUE(message.has_value());
+  EXPECT_EQ(message->body, "hi");
+  ASSERT_EQ(message->extensions.size(), 2u);
+  EXPECT_EQ(message->extensions[0].as<delay>().stamp, "2002-09-10T23:08:25Z");
+  ASSERT_TRUE(message->extensions[1].is<chevron::any>());
+  EXPECT_EQ(message->extensions[1].as<chevron::any>().local, "active");
+
+  std::string eager;
+  chevron::write(std::back_inserter(eager), *message);
+  const std::string lazy = chevron::to_xml(*message) | std::ranges::to<std::string>();
+  EXPECT_EQ(eager, lazy);
+  EXPECT_NE(lazy.find("<delay xmlns=\"urn:xmpp:delay\" stamp=\"2002-09-10T23:08:25Z\"/>"), std::string::npos) << lazy;
+  const auto back = chevron::read<note>(std::string_view(lazy) | chevron::events);
+  ASSERT_TRUE(back.has_value()) << lazy;
+  ASSERT_EQ(back->extensions.size(), 2u);
+  EXPECT_EQ(back->extensions[0].as<delay>().stamp, "2002-09-10T23:08:25Z");
+  EXPECT_EQ(back->extensions[1].as<chevron::any>().uri, "http://jabber.org/protocol/chatstates");
+
+  std::string answer_written;
+  chevron::write(std::back_inserter(answer_written), *answer);
+  const auto answer_back = chevron::read<result>(std::string_view(answer_written) | chevron::events);
+  ASSERT_TRUE(answer_back.has_value()) << answer_written;
+  EXPECT_EQ(answer_back->payload.as<version>().name, "ejabberd");
+}

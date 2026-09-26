@@ -78,6 +78,14 @@ auto s = chevron::read_one_of<chat::message, chat::presence>(parser);
 - A member the schema does not mention is a child element: read by its own
   schema where its type has one, as text otherwise. `std::optional` may be
   absent; `std::vector` may repeat.
+- `chevron::tagged<A, B, …, chevron::any>` for a child that is one of several
+  types, chosen by its element name as each alternative's schema gives it
+  (with its `.when<>()`), and read straight into that type -- no tree on the
+  way. `chevron::any`, allowed only last, takes an element no alternative
+  names, and is the only tree there is. `is<T>()`, `as<T>()`, `data()`;
+  optional and vector as for any member, and written back as it was held.
+  Members claim children in their order: a `tagged` ending in `any` takes
+  every child the members before it have not.
 - Checked at compile time: one descriptor per member, no member described
   twice, and a descriptor that fits its member's type.
 - Writing is the same schema the other way, lazily:
@@ -106,7 +114,7 @@ in blocks that are used again, so a parser that has run a while allocates
 nothing more for it.
 
 `test/bench/text.cc`, a stanza with a body of 16 KB read through
-`chevron::events`, one core: 285 MB/s for ASCII, 276 MB/s for Cyrillic.
+`chevron::events`, one core: 308 MB/s for ASCII, 289 MB/s for Cyrillic.
 
 Tested under AddressSanitizer and UndefinedBehaviorSanitizer as well.
 
