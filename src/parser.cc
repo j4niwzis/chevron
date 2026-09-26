@@ -195,7 +195,11 @@ namespace runs {
 using bytes32 = unsigned char __attribute__((vector_size(32)));
 using flags32 = bool __attribute__((ext_vector_type(32)));
 
-inline std::uint32_t mask_of(auto flags) {
+// Taken by reference: a 32-byte vector passed by value is passed in an AVX
+// register where there is AVX and on the stack where there is not, so its
+// passing is an ABI that depends on -mavx (clang warns -Wpsabi). Inlined,
+// this costs nothing.
+inline std::uint32_t mask_of(const auto& flags) {
   return __builtin_bit_cast(std::uint32_t, __builtin_convertvector(flags, flags32));
 }
 
