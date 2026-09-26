@@ -61,3 +61,9 @@ if(CHEVRON_TESTS)
   enable_testing()
   add_subdirectory(test)
 endif()
+
+# Fuzz targets, for libFuzzer: test/fuzz/CMakeLists.txt says how.
+option(CHEVRON_FUZZ "Build the fuzz targets" OFF)
+if(CHEVRON_FUZZ)
+  add_subdirectory(test/fuzz)
+endif()
