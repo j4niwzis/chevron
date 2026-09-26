@@ -255,3 +255,50 @@ static_assert(round_trip());
 TEST(Write, AtCompileTime) { EXPECT_TRUE(round_trip()); }
 
 }  // namespace
+
+namespace chat {
+
+struct note {
+  std::string to;
+  std::optional<std::string> body;
+  chevron::kept_attributes others;
+};
+
+constexpr auto xml_schema(chevron::type<note>) {
+  using namespace chevron::members;
+  return chevron::schema<note>()
+      .name("urn:example:client", "note")
+      .member<"to">(attribute())
+      .member<"body">(child_text())
+      .member<"others">(unknown_attributes());
+}
+
+}  // namespace chat
+
+namespace {
+
+TEST(Read, KeptAttributes) {
+  const std::string_view in =
+      R"(<note xmlns="urn:example:client" id="n1" to="juliet" xml:lang="en" )"
+      R"(xmlns:x="urn:example:x" x:mark="yes"><body>hi</body></note>)";
+  const auto got = chevron::read<chat::note>(in | chevron::events);
+  ASSERT_TRUE(got.has_value());
+  EXPECT_EQ(got->to, "juliet");
+  ASSERT_EQ(got->others.size(), 3u);
+  EXPECT_EQ(got->others[0].first.second, "id");
+  EXPECT_EQ(got->others[1].first.first, "http://www.w3.org/XML/1998/namespace");
+  EXPECT_EQ(got->others[2].first.first, "urn:example:x");
+  EXPECT_EQ(got->others[2].second, "yes");
+  // Written back, lazily and at once alike, and read back the same.
+  const std::string lazy = chevron::to_xml(*got) | std::ranges::to<std::string>();
+  std::string eager;
+  auto out = std::back_inserter(eager);
+  chevron::write(out, *got);
+  EXPECT_EQ(lazy, eager);
+  const auto back = chevron::read<chat::note>(std::string_view(lazy) | chevron::events);
+  ASSERT_TRUE(back.has_value()) << lazy;
+  EXPECT_EQ(back->others, got->others);
+  EXPECT_EQ(back->body, "hi");
+}
+
+}  // namespace

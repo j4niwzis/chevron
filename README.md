@@ -65,7 +65,8 @@ auto s = chevron::read_one_of<chat::message, chat::presence>(parser);
 - Member names come from Boost.PFR; `.member<"to">(…)` names a member, and
   `.members(…)` gives one descriptor to every member in order.
 - Descriptors: `attribute()`, `child_text()`, `child()`, `text()`,
-  `unknown_children()`, and `_` for the default -- each may give the XML name
+  `unknown_children()`, `unknown_attributes()` (a `chevron::kept_attributes`
+  for every attribute nothing else claims), and `_` for the default -- each may give the XML name
   and namespace where they are not the member's name and the parent's
   namespace.
 - A member the schema does not mention is a child element: read by its own

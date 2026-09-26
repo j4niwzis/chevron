@@ -36,6 +36,9 @@ struct fixed_string {
   constexpr std::string_view view() const { return {text, N - 1}; }
 };
 
+// Attributes kept as they came: {namespace URI, local name}, value.
+using kept_attributes = std::vector<std::pair<std::pair<std::string, std::string>, std::string>>;
+
 // A subtree kept as it came, for what a schema does not describe.
 struct any_node;
 struct any {
@@ -50,7 +53,7 @@ struct any_node {
 
 namespace members {
 
-enum class kind : std::uint8_t { deduced, attribute, child_text, child, text, unknown_children };
+enum class kind : std::uint8_t { deduced, attribute, child_text, child, text, unknown_children, unknown_attributes };
 
 // What a member is in XML, and its name there where it is not the member's.
 struct descriptor {
@@ -76,6 +79,8 @@ constexpr descriptor child(std::string_view local = {}, std::optional<std::strin
 constexpr descriptor text() { return {kind::text}; }
 // Every child element nothing else claims, kept whole: a std::vector<any>.
 constexpr descriptor unknown_children() { return {kind::unknown_children}; }
+// Every attribute nothing else claims, kept as it came: chevron::kept_attributes.
+constexpr descriptor unknown_attributes() { return {kind::unknown_attributes}; }
 // The default, spelled out: a child element, by schema or with text.
 inline constexpr descriptor _{};
 
@@ -341,6 +346,9 @@ struct described_member {
     else if constexpr (what == members::kind::unknown_children)
       static_assert(std::same_as<held, std::vector<any>>,
                     "chevron: unknown_children() needs a std::vector<chevron::any>");
+    else if constexpr (what == members::kind::unknown_attributes)
+      static_assert(std::same_as<held, kept_attributes>,
+                    "chevron: unknown_attributes() needs a chevron::kept_attributes");
   }
 };
 
@@ -377,6 +385,26 @@ constexpr std::expected<T, read_error> read_element(Source& source, const start_
       }
     };
     (one(std::integral_constant<std::size_t, I>{}), ...);
+    const auto keep = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
+      if constexpr (info::template kind_of<K>() == members::kind::unknown_attributes) {
+        auto& kept = boost::pfr::get<K>(out);
+        for (const attribute& found : start.attributes) {
+          // Claimed by a member that names it?
+          const bool claimed = (false || ... || [&] {
+            if constexpr (info::template kind_of<I>() == members::kind::attribute) {
+              const std::string_view uri = info::schema.bound[I].uri.value_or(std::string_view());
+              return found.name.local == info::template local_of<I>() && found.name.uri == uri;
+            } else {
+              return false;
+            }
+          }());
+          if (!claimed)
+            kept.push_back({{std::string(found.name.uri), std::string(found.name.local)},
+                            std::string(found.value)});
+        }
+      }
+    };
+    (keep(std::integral_constant<std::size_t, I>{}), ...);
   }(std::make_index_sequence<count>{});
   if (failure)
     return std::unexpected(*failure);
@@ -751,6 +779,9 @@ constexpr void write_element(Out& out, const T& value, std::string_view uri, std
         } else {
           attributes.emplace_back(attribute_uri, info::template local_of<K>(), text_of(member));
         }
+      } else if constexpr (what == members::kind::unknown_attributes) {
+        for (const auto& [name, kept] : member)
+          attributes.emplace_back(name.first, name.second, kept);
       } else if constexpr (is_optional<held>::value) {
         has_content = has_content || member.has_value();
       } else if constexpr (is_vector<held>::value) {
@@ -947,6 +978,9 @@ class element_frame final : public frame {
           } else {
             attributes.emplace_back(in, info::template local_of<K>(), text_of(held));
           }
+        } else if constexpr (what == members::kind::unknown_attributes) {
+          for (const auto& [name, kept] : held)
+            attributes.emplace_back(name.first, name.second, kept);
         } else if constexpr (is_optional<type>::value) {
           content = content || held.has_value();
         } else if constexpr (is_vector<type>::value) {
@@ -983,7 +1017,7 @@ class element_frame final : public frame {
       ++member_;
       index_ = 0;
     };
-    if constexpr (what == members::kind::attribute) {
+    if constexpr (what == members::kind::attribute || what == members::kind::unknown_attributes) {
       move_on();
       return std::nullopt;
     } else if constexpr (what == members::kind::text) {
