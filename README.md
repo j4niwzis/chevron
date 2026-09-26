@@ -16,10 +16,16 @@ Namespaces that RFC 6120, section 11, allows, read from bytes as they arrive.
     std::visit(handle, **next);
   }
   ```
-- **From any range.** `text | chevron::events` is a view of the events of any
-  input range of UTF-8 code units -- a string, a stream read once, a
-  generator -- reading only as far as the next event needs; each element is
-  a `std::expected<event, error>`.
+- **From any range, never ahead.** `text | chevron::events` is a view of the
+  events of any input range of UTF-8 code units -- a string, a stream read
+  once, a socket, a generator -- read unit by unit up to the `<` or `>`
+  where an event can end, and asked whether it has ended only where another
+  unit is needed: over a socket, nothing waits for bytes the next event does
+  not need. Each element is a `std::expected<event, error>`.
+- **Or in chunks.** A range of chunks -- what each read of a socket brought,
+  say -- is taken a chunk at a time: `pieces | chevron::events`. Where
+  reading ahead costs nothing, `chevron::chunked<N>` makes chunks of up to
+  N units: `file | chevron::chunked<4096> | chevron::events`.
 - **Names resolved.** Element and attribute names come with their namespace
   URI; namespace declarations are not reported as attributes.
 - **The subset streams allow, and nothing more.** UTF-8 only; an XML

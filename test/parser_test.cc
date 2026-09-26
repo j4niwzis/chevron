@@ -180,6 +180,70 @@ TEST(Parser, FromRanges) {
 
 namespace {
 
+// Input as a socket gives it: asking whether it has ended waits for the peer.
+struct live_input {
+  std::string_view data;
+  std::size_t at = 0;
+  bool asked_past = false;
+
+  struct iterator {
+    using value_type = char;
+    using difference_type = std::ptrdiff_t;
+    live_input* in = nullptr;
+    char operator*() const { return in->data[in->at]; }
+    iterator& operator++() {
+      ++in->at;
+      return *this;
+    }
+    void operator++(int) { ++*this; }
+    bool operator==(std::default_sentinel_t) const {
+      if (in->at == in->data.size())
+        in->asked_past = true;
+      return in->at == in->data.size();
+    }
+  };
+  iterator begin() { return {this}; }
+  std::default_sentinel_t end() const { return {}; }
+};
+
+}  // namespace
+
+// Units read one by one, to the '>' that ends an event and no further.
+TEST(Parser, NothingReadAhead) {
+  live_input input{"<a><b x='1'>hi</b>"};
+  std::size_t ends = 0;
+  for (auto&& one : std::ranges::ref_view(input) | chevron::events) {
+    ASSERT_TRUE(one.has_value());
+    if (std::holds_alternative<chevron::end_element>(*one) && ++ends == 1)
+      break;
+  }
+  EXPECT_EQ(ends, 1u);
+  EXPECT_FALSE(input.asked_past);
+}
+
+// Chunks taken whole -- split anywhere, inside a tag or a UTF-8 sequence --
+// or made by chunked<N>: the same events.
+TEST(Parser, FromChunks) {
+  const std::string document = "<a x='1'>h\xd0\x9f\xd1\x80i<b/></a>";
+  const auto shown_all = [](auto&& range) {
+    std::vector<std::string> out;
+    for (const auto& one : std::forward<decltype(range)>(range) | chevron::events)
+      out.push_back(one ? shown(*one) : shown(one.error()));
+    return out;
+  };
+  const auto whole = read(document);
+  const std::vector<std::string> pieces{"<a x", "='1'>h\xd0", "\x9f\xd1\x80i<", "b/></a>"};
+  EXPECT_EQ(shown_all(pieces), whole);
+  EXPECT_EQ(shown_all(std::string_view(document) | chevron::chunked<1>), whole);
+  EXPECT_EQ(shown_all(std::string_view(document) | chevron::chunked<5>), whole);
+  EXPECT_EQ(shown_all(std::string_view(document) | chevron::chunked<4096>), whole);
+  std::istringstream stream(document);
+  stream >> std::noskipws;
+  EXPECT_EQ(shown_all(std::views::istream<char>(stream) | chevron::chunked<3>), whole);
+}
+
+namespace {
+
 // Long enough for the checks 16 bytes at a time, with what they must refuse
 // at every place.
 TEST(Parser, LongTextChecked) {
