@@ -609,10 +609,26 @@ class range_source {
 
 export namespace chevron {
 
+// The next event that is not white space between elements.
+template <class Source>
+constexpr auto next_significant(Source& source) {
+  for (;;) {
+    auto next = detail::reading::next_event(source);
+    if (next) {
+      if (const auto* piece = std::get_if<text>(&*next);
+          piece && std::ranges::all_of(piece->content, [](char one) {
+            return one == ' ' || one == '\t' || one == '\n' || one == '\r';
+          }))
+        continue;
+    }
+    return next;
+  }
+}
+
 // One element read into a T: the next event must be its start.
 template <described T, event_source Source>
 constexpr std::expected<T, read_error> read(Source& source) {
-  auto next = detail::reading::next_event(source);
+  auto next = next_significant(source);
   if (!next)
     return std::unexpected(next.error());
   const auto* start = std::get_if<start_element>(&*next);
@@ -633,7 +649,7 @@ constexpr std::expected<T, read_error> read(Range&& events) {
 // One element read into whichever of the types its name is.
 template <described... T, event_source Source>
 constexpr std::expected<std::variant<T...>, read_error> read_one_of(Source& source) {
-  auto next = detail::reading::next_event(source);
+  auto next = next_significant(source);
   if (!next)
     return std::unexpected(next.error());
   const auto* start = std::get_if<start_element>(&*next);
