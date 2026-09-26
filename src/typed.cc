@@ -97,6 +97,22 @@ class tagged {
   constexpr std::variant<Alternatives...>& data() noexcept { return data_; }
   constexpr const std::variant<Alternatives...>& data() const noexcept { return data_; }
 
+  // f called with the alternative held: a branch for each, which the
+  // optimizer can see through -- no table of functions called indirectly,
+  // as std::visit makes.
+  template <class F>
+  constexpr void with(F&& f) const {
+    [&]<std::size_t... I>(std::index_sequence<I...>) {
+      ((data_.index() == I ? (void)f(*std::get_if<I>(&data_)) : void()), ...);
+    }(std::index_sequence_for<Alternatives...>{});
+  }
+  template <class F>
+  constexpr void with(F&& f) {
+    [&]<std::size_t... I>(std::index_sequence<I...>) {
+      ((data_.index() == I ? (void)f(*std::get_if<I>(&data_)) : void()), ...);
+    }(std::index_sequence_for<Alternatives...>{});
+  }
+
  private:
   std::variant<Alternatives...> data_;
 };
@@ -997,16 +1013,14 @@ constexpr void write_element(Out& out, const T& value, std::string_view uri, std
           write_any(out, kept, uri);
       } else if constexpr (what == members::kind::tagged) {
         const auto write_one = [&](const one_value& each) {
-          std::visit(
-              [&]<class One>(const One& alternative) {
-                if constexpr (std::same_as<One, any>) {
-                  write_any(out, alternative, uri);
-                } else {
-                  constexpr auto inner = xml_schema(type<One>{});
-                  write_element(out, alternative, inner.uri, inner.local, uri);
-                }
-              },
-              each.data());
+          each.with([&]<class One>(const One& alternative) {
+            if constexpr (std::same_as<One, any>) {
+              write_any(out, alternative, uri);
+            } else {
+              constexpr auto inner = xml_schema(type<One>{});
+              write_element(out, alternative, inner.uri, inner.local, uri);
+            }
+          });
         };
         if constexpr (is_optional<held>::value) {
           if (member)
@@ -1293,16 +1307,14 @@ class writer {
       } else {
         std::optional<std::string_view> got;
         if constexpr (what == members::kind::tagged) {
-          got = std::visit(
-              [&]<class One>(const One& alternative) -> std::optional<std::string_view> {
-                if constexpr (std::same_as<One, any>) {
-                  return kept(alternative, uri, level + 1);
-                } else {
-                  constexpr auto inner = xml_schema(chevron::type<One>{});
-                  return element(alternative, inner.uri, inner.local, uri, level + 1);
-                }
-              },
-              occurrence->data());
+          occurrence->with([&]<class One>(const One& alternative) {
+            if constexpr (std::same_as<One, any>) {
+              got = kept(alternative, uri, level + 1);
+            } else {
+              constexpr auto inner = xml_schema(chevron::type<One>{});
+              got = element(alternative, inner.uri, inner.local, uri, level + 1);
+            }
+          });
         } else {
           got = element(*occurrence, child_uri, name.first, uri, level + 1);
         }
