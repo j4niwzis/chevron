@@ -28,34 +28,31 @@ set(CHEVRON_CONSTEXPR_STEPS 100000000 CACHE STRING
 
 # One module to a target, so that a change to one compiles again only it and
 # what imports it.
-function(chevron_module target file)
-  add_library(${target})
-  target_sources(${target}
-    PUBLIC FILE_SET CXX_MODULES BASE_DIRS src FILES ${file})
-  target_compile_features(${target} PUBLIC cxx_std_26)
-  if(ARGN)
-    target_link_libraries(${target} PUBLIC ${ARGN})
-  endif()
-  # A usage requirement of every module, as alef has. Besides giving constant
-  # evaluation room, it makes the modules' settings differ from those of the
-  # std target, so that CMake builds them against a std synthesized for
-  # them -- the same one it synthesizes for their consumers, the tests among
-  # them, and for the googletest those consume. Without it, a test would see
-  # chevron's modules built against one std and googletest's against
-  # another, which clang does not survive.
-  target_compile_options(${target} PUBLIC
-    $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-fconstexpr-steps=${CHEVRON_CONSTEXPR_STEPS}>)
-endfunction()
+# One library, libchevron.a, with its modules in one file set: modules are
+# what separates it, and archives did not need to as well. It has no part a
+# consumer would leave out -- the parser, the events over it, the typed
+# reading and the module that imports them -- so it has no components.
+add_library(chevron)
+target_sources(chevron PUBLIC FILE_SET CXX_MODULES BASE_DIRS src
+  FILES src/parser.cc src/events.cc src/typed.cc src/chevron.cc)
+target_compile_features(chevron PUBLIC cxx_std_26)
+target_link_libraries(chevron PUBLIC Boost::pfr)
+# A usage requirement of the library, as alef has. Besides giving constant
+# evaluation room, it makes the modules' settings differ from those of the
+# std target, so that CMake builds them against a std synthesized for them
+# -- the same one it synthesizes for their consumers, the tests among them,
+# and for the googletest those consume. Without it, a test would see
+# chevron's modules built against one std and googletest's against another,
+# which clang does not survive.
+target_compile_options(chevron PUBLIC
+  $<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>:-fconstexpr-steps=${CHEVRON_CONSTEXPR_STEPS}>)
 
-chevron_module(chevron_parser src/parser.cc)
-chevron_module(chevron_events src/events.cc chevron_parser)
-chevron_module(chevron_typed src/typed.cc chevron_parser Boost::pfr)
-chevron_module(chevron src/chevron.cc chevron_parser chevron_events chevron_typed)
-
-add_library(chevron::parser ALIAS chevron_parser)
-add_library(chevron::events ALIAS chevron_events)
-add_library(chevron::typed ALIAS chevron_typed)
+# The names the targets used to have, each the one library now.
 add_library(chevron::chevron ALIAS chevron)
+foreach(name IN ITEMS parser events typed)
+  add_library(chevron::${name} ALIAS chevron)
+  add_library(chevron_${name} ALIAS chevron)
+endforeach()
 
 if(CHEVRON_TESTS)
   enable_testing()
