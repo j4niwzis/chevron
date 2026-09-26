@@ -667,7 +667,7 @@ constexpr std::optional<std::expected<Tagged, read_error>> read_tagged(Source& s
       if constexpr (std::same_as<One, any>) {
         auto kept = capture(source, start);
         if (kept)
-          out.emplace(Tagged(std::move(*kept)));
+          out.emplace(Tagged(One(std::move(*kept))));  // One is any here: dependent, so not checked for a tagged without any
         else
           out.emplace(std::unexpected(kept.error()));
       } else {
@@ -1097,25 +1097,6 @@ using writing::put;
 using writing::put_text;
 using writing::text_of;
 
-// One element being written, as a machine that gives the next piece of text
-// each time it is asked -- or an element nested in it to write first, or that
-// it is done. The pieces stay valid until it is asked again.
-struct frame {
-  struct step {
-    enum class what : std::uint8_t { piece, child, done } kind = what::done;
-    std::string_view text{};
-    std::unique_ptr<frame> child{};
-  };
-  constexpr virtual ~frame() = default;
-  constexpr virtual step next() = 0;
-};
-
-using step = frame::step;
-
-constexpr step piece(std::string_view text) { return {step::what::piece, text, nullptr}; }
-constexpr step child(std::unique_ptr<frame> inner) { return {step::what::child, {}, std::move(inner)}; }
-constexpr step done() { return {}; }
-
 constexpr std::string start_tag(std::string_view uri, std::string_view local, std::string_view in_effect,
                       const std::vector<std::tuple<std::string_view, std::string_view, std::string>>& attributes,
                       bool empty) {
@@ -1126,130 +1107,133 @@ constexpr std::string start_tag(std::string_view uri, std::string_view local, st
   return out;
 }
 
-class any_frame final : public frame {
- public:
-  constexpr any_frame(const any& element, std::string_view in_effect) : element_(element), in_effect_(in_effect) {}
+// Where the writing is: a level for each element open -- its phase (the
+// start tag next, its content, done), the member being written and which
+// occurrence of it (for a kept element, which child). For each piece the
+// writer walks down from the root along it, choosing each level's writer by
+// its type at compile time and the depth at run time: no writer is erased
+// into a common type, and a type that holds itself is written by the same
+// function, deeper.
+struct position {
+  int phase = 0;
+  std::size_t member = 0;
+  std::size_t index = 0;
+};
 
-  constexpr step next() override {
-    if (phase_ == 0) {
+class writer {
+ public:
+  // The next piece of `value`, the element at `level`; nothing where it is
+  // written. A piece stays valid until the writer is asked again.
+  template <class T>
+  constexpr std::optional<std::string_view> element(const T& value, std::string_view uri, std::string_view local,
+                                                    std::string_view in_effect, std::size_t level) {
+    using info = described_member<T>;
+    constexpr std::size_t count = info::schema.count;
+    if (at_.size() <= level)
+      at_.push_back({});
+    if (at_[level].phase == 0) {
       std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
-      for (const auto& [name, value] : element_.attributes)
-        attributes.emplace_back(name.first, name.second, value);
-      buffer_ = start_tag(element_.uri, element_.local, in_effect_, attributes, element_.children.empty());
-      phase_ = element_.children.empty() ? 2 : 1;
-      return piece(buffer_);
+      bool content = false;
+      [&]<std::size_t... I>(std::index_sequence<I...>) {
+        (info::template check<I>(), ...);
+        const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
+          constexpr members::kind what = info::template kind_of<K>();
+          const auto& held = boost::pfr::get<K>(value);
+          using type = std::remove_cvref_t<decltype(held)>;
+          if constexpr (what == members::kind::attribute) {
+            const std::string_view in = info::schema.bound[K].uri.value_or(std::string_view());
+            if constexpr (is_optional<type>::value) {
+              if (held)
+                attributes.emplace_back(in, info::template local_of<K>(), text_of(*held));
+            } else {
+              attributes.emplace_back(in, info::template local_of<K>(), text_of(held));
+            }
+          } else if constexpr (what == members::kind::unknown_attributes) {
+            for (const auto& [name, kept] : held)
+              attributes.emplace_back(name.first, name.second, kept);
+          } else if constexpr (is_optional<type>::value) {
+            content = content || held.has_value();
+          } else if constexpr (is_vector<type>::value) {
+            content = content || !held.empty();
+          } else if constexpr (what == members::kind::text) {
+            content = content || !text_of(held).empty();
+          } else {
+            content = true;
+          }
+        };
+        (one(std::integral_constant<std::size_t, I>{}), ...);
+      }(std::make_index_sequence<count>{});
+      if constexpr (info::schema.has_when) {
+        if (!info::schema.when_absent)
+          attributes.emplace_back(std::string_view(), info::schema.when_local, std::string(info::schema.when_value));
+      }
+      buffer_ = start_tag(uri, local, in_effect, attributes, !content);
+      at_[level].phase = content ? 1 : 2;
+      return std::string_view(buffer_);
     }
-    if (phase_ == 1) {
-      if (at_ < element_.children.size()) {
-        const any_node& one = element_.children[at_++];
+    if (at_[level].phase == 1) {
+      while (at_[level].member < count) {
+        std::optional<std::string_view> out;
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+          ((at_[level].member == I ? (out = member<T, I>(value, uri, level), true) : false) || ...);
+        }(std::make_index_sequence<count>{});
+        if (out)
+          return out;
+      }
+      buffer_ = "</" + std::string(local) + ">";
+      at_[level].phase = 2;
+      return std::string_view(buffer_);
+    }
+    return std::nullopt;
+  }
+
+  // The same for an element kept as it came.
+  constexpr std::optional<std::string_view> kept(const any& element, std::string_view in_effect, std::size_t level) {
+    if (at_.size() <= level)
+      at_.push_back({});
+    if (at_[level].phase == 0) {
+      std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
+      for (const auto& [name, value] : element.attributes)
+        attributes.emplace_back(name.first, name.second, value);
+      buffer_ = start_tag(element.uri, element.local, in_effect, attributes, element.children.empty());
+      at_[level].phase = element.children.empty() ? 2 : 1;
+      return std::string_view(buffer_);
+    }
+    if (at_[level].phase == 1) {
+      while (at_[level].member < element.children.size()) {
+        const any_node& one = element.children[at_[level].member];
         if (const auto* text = std::get_if<std::string>(&one.value)) {
+          ++at_[level].member;
           buffer_.clear();
           auto out = std::back_inserter(buffer_);
           put_text(out, *text);
-          return piece(buffer_);
+          return std::string_view(buffer_);
         }
-        return child(std::make_unique<any_frame>(std::get<any>(one.value), element_.uri));
+        if (auto got = kept(std::get<any>(one.value), element.uri, level + 1))
+          return got;
+        at_.resize(level + 1);
+        ++at_[level].member;
       }
-      buffer_ = "</" + element_.local + ">";
-      phase_ = 2;
-      return piece(buffer_);
+      buffer_ = "</" + element.local + ">";
+      at_[level].phase = 2;
+      return std::string_view(buffer_);
     }
-    return done();
+    return std::nullopt;
   }
 
  private:
-  const any& element_;
-  std::string_view in_effect_;
-  int phase_ = 0;
-  std::size_t at_ = 0;
-  std::string buffer_;
-};
-
-template <class T>
-class element_frame final : public frame {
-  using info = described_member<T>;
-  static constexpr std::size_t count = info::schema.count;
-
- public:
-  constexpr element_frame(const T& value, std::string_view uri, std::string_view local, std::string_view in_effect)
-      : value_(value), uri_(uri), local_(local), in_effect_(in_effect) {}
-
-  constexpr step next() override {
-    if (phase_ == 0)
-      return open();
-    if (phase_ == 1) {
-      while (member_ < count) {
-        std::optional<step> out = member(std::make_index_sequence<count>{});
-        if (out)
-          return std::move(*out);
-      }
-      buffer_ = "</" + std::string(local_) + ">";
-      phase_ = 2;
-      return piece(buffer_);
-    }
-    return done();
-  }
-
- private:
-  constexpr step open() {
-    std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
-    bool content = false;
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
-      (info::template check<I>(), ...);
-      const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
-        constexpr members::kind what = info::template kind_of<K>();
-        const auto& held = boost::pfr::get<K>(value_);
-        using type = std::remove_cvref_t<decltype(held)>;
-        if constexpr (what == members::kind::attribute) {
-          const std::string_view in = info::schema.bound[K].uri.value_or(std::string_view());
-          if constexpr (is_optional<type>::value) {
-            if (held)
-              attributes.emplace_back(in, info::template local_of<K>(), text_of(*held));
-          } else {
-            attributes.emplace_back(in, info::template local_of<K>(), text_of(held));
-          }
-        } else if constexpr (what == members::kind::unknown_attributes) {
-          for (const auto& [name, kept] : held)
-            attributes.emplace_back(name.first, name.second, kept);
-        } else if constexpr (is_optional<type>::value) {
-          content = content || held.has_value();
-        } else if constexpr (is_vector<type>::value) {
-          content = content || !held.empty();
-        } else if constexpr (what == members::kind::text) {
-          content = content || !text_of(held).empty();
-        } else {
-          content = true;
-        }
-      };
-      (one(std::integral_constant<std::size_t, I>{}), ...);
-    }(std::make_index_sequence<count>{});
-    if constexpr (info::schema.has_when) {
-      if (!info::schema.when_absent)
-        attributes.emplace_back(std::string_view(), info::schema.when_local, std::string(info::schema.when_value));
-    }
-    buffer_ = start_tag(uri_, local_, in_effect_, attributes, !content);
-    phase_ = content ? 1 : 2;
-    return piece(buffer_);
-  }
-
-  // The next thing member_ gives, if it gives any more; otherwise on to the
-  // member after it.
-  template <std::size_t... I>
-  constexpr std::optional<step> member(std::index_sequence<I...>) {
-    std::optional<step> out;
-    ((member_ == I ? (out = member_at<I>(), true) : false) || ...);
-    return out;
-  }
-
-  template <std::size_t K>
-  constexpr std::optional<step> member_at() {
+  // The next piece member K of the element at `level` gives; nothing where it
+  // has no more, and the element goes on to the next member.
+  template <class T, std::size_t K>
+  constexpr std::optional<std::string_view> member(const T& value, std::string_view uri, std::size_t level) {
+    using info = described_member<T>;
     constexpr members::kind what = info::template kind_of<K>();
-    const auto& held = boost::pfr::get<K>(value_);
+    const auto& held = boost::pfr::get<K>(value);
     using type = std::remove_cvref_t<decltype(held)>;
     using one_value = element_of<type>;
     const auto move_on = [&] {
-      ++member_;
-      index_ = 0;
+      ++at_[level].member;
+      at_[level].index = 0;
     };
     if constexpr (what == members::kind::attribute || what == members::kind::unknown_attributes) {
       move_on();
@@ -1265,97 +1249,74 @@ class element_frame final : public frame {
       } else {
         put_text(out, text_of(held));
       }
-      return piece(buffer_);
+      return std::string_view(buffer_);
     } else if constexpr (what == members::kind::unknown_children) {
-      if (index_ >= held.size()) {
+      if (at_[level].index >= held.size()) {
         move_on();
         return std::nullopt;
       }
-      return child(std::make_unique<any_frame>(held[index_++], uri_));
+      if (auto got = kept(held[at_[level].index], uri, level + 1))
+        return got;
+      at_.resize(level + 1);
+      ++at_[level].index;
+      return std::nullopt;
     } else {
       // An occurrence of a child: the index-th of a vector, or the one there
       // is of an optional or a plain member.
+      const std::size_t index = at_[level].index;
       const one_value* occurrence = nullptr;
       if constexpr (is_vector<type>::value) {
-        if (index_ < held.size())
-          occurrence = &held[index_];
+        if (index < held.size())
+          occurrence = &held[index];
       } else if constexpr (is_optional<type>::value) {
-        if (index_ == 0 && held)
+        if (index == 0 && held)
           occurrence = &*held;
       } else {
-        if (index_ == 0)
+        if (index == 0)
           occurrence = &held;
       }
       if (!occurrence) {
         move_on();
         return std::nullopt;
       }
-      ++index_;
       constexpr auto name = info::template child_name<K>();
-      const std::string_view child_uri = name.second.value_or(uri_);
-      if constexpr (what == members::kind::tagged) {
-        return std::visit(
-            [&]<class One>(const One& alternative) -> std::optional<step> {
-              if constexpr (std::same_as<One, any>) {
-                return child(std::make_unique<any_frame>(alternative, uri_));
-              } else {
-                constexpr auto inner = xml_schema(chevron::type<One>{});
-                return child(std::make_unique<element_frame<One>>(alternative, inner.uri, inner.local, uri_));
-              }
-            },
-            occurrence->data());
-      } else if constexpr (what == members::kind::child) {
-        return child(std::make_unique<element_frame<one_value>>(*occurrence, child_uri, name.first, uri_));
-      } else {
-        buffer_ = start_tag(child_uri, name.first, uri_, {}, false);
+      const std::string_view child_uri = name.second.value_or(uri);
+      if constexpr (what == members::kind::child_text) {
+        ++at_[level].index;
+        buffer_ = start_tag(child_uri, name.first, uri, {}, false);
         auto out = std::back_inserter(buffer_);
         put_text(out, text_of(*occurrence));
         put(out, "</");
         put(out, name.first);
         put(out, ">");
-        return piece(buffer_);
+        return std::string_view(buffer_);
+      } else {
+        std::optional<std::string_view> got;
+        if constexpr (what == members::kind::tagged) {
+          got = std::visit(
+              [&]<class One>(const One& alternative) -> std::optional<std::string_view> {
+                if constexpr (std::same_as<One, any>) {
+                  return kept(alternative, uri, level + 1);
+                } else {
+                  constexpr auto inner = xml_schema(chevron::type<One>{});
+                  return element(alternative, inner.uri, inner.local, uri, level + 1);
+                }
+              },
+              occurrence->data());
+        } else {
+          got = element(*occurrence, child_uri, name.first, uri, level + 1);
+        }
+        if (got)
+          return got;
+        at_.resize(level + 1);
+        ++at_[level].index;
+        return std::nullopt;
       }
     }
   }
 
-  const T& value_;
-  std::string_view uri_;
-  std::string_view local_;
-  std::string_view in_effect_;
-  int phase_ = 0;
-  std::size_t member_ = 0;
-  std::size_t index_ = 0;
+  std::vector<position> at_;
   std::string buffer_;
-};
-
-// The writing machine: a stack of frames, and the piece being given out.
-class machine {
- public:
-  constexpr machine() = default;
-  constexpr explicit machine(std::unique_ptr<frame> root) { stack_.push_back(std::move(root)); }
-
-  // The next piece, or nothing where the document is written.
-  constexpr std::optional<std::string_view> next() {
-    while (!stack_.empty()) {
-      step one = stack_.back()->next();
-      switch (one.kind) {
-        case step::what::piece:
-          if (!one.text.empty())
-            return one.text;
-          break;
-        case step::what::child:
-          stack_.push_back(std::move(one.child));
-          break;
-        case step::what::done:
-          stack_.pop_back();
-          break;
-      }
-    }
-    return std::nullopt;
-  }
-
- private:
-  std::vector<std::unique_ptr<frame>> stack_;
 };
 
 }  // namespace chevron::detail::lazy
@@ -1364,7 +1325,8 @@ export namespace chevron {
 
 // A value as XML, lazily: a view of its characters, made as they are pulled --
 // piece by piece, with nothing of the document held but the piece being
-// read. to_xml(value) | std::ranges::to<std::string>() for a string;
+// read and where it is, and nothing erased: the writer of each element is
+// chosen by its type. to_xml(value) | std::ranges::to<std::string>() for a string;
 // .chunks() for the pieces themselves, which is cheaper to copy from. A value
 // given as an rvalue is kept by the view; one given as an lvalue is referred
 // to, and has to outlive it.
@@ -1448,23 +1410,30 @@ class xml_view : public std::ranges::view_interface<xml_view<T>> {
 
  private:
   constexpr void start() {
-    constexpr auto schema = xml_schema(type<T>{});
-    static_assert(schema.named, "chevron: a type written on its own needs .name() in its schema");
-    machine_ = detail::lazy::machine(std::make_unique<detail::lazy::element_frame<T>>(
-        *value_, schema.uri, schema.local, std::string_view()));
+    static_assert(xml_schema(type<T>{}).named, "chevron: a type written on its own needs .name() in its schema");
+    writer_ = detail::lazy::writer();
     done_ = false;
   }
+  // The next piece that has characters in it.
   constexpr void pull() {
+    constexpr auto schema = xml_schema(type<T>{});
     at_ = 0;
-    if (const auto next = machine_.next())
-      piece_ = *next;
-    else
-      done_ = true;
+    for (;;) {
+      const auto next = writer_.element(*value_, schema.uri, schema.local, std::string_view(), 0);
+      if (!next) {
+        done_ = true;
+        return;
+      }
+      if (!next->empty()) {
+        piece_ = *next;
+        return;
+      }
+    }
   }
 
   std::unique_ptr<T> owned_;
   const T* value_ = nullptr;
-  detail::lazy::machine machine_;
+  detail::lazy::writer writer_;
   std::string_view piece_;
   std::size_t at_ = 0;
   bool done_ = true;
