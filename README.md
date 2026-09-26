@@ -85,6 +85,24 @@ auto s = chevron::read_one_of<chat::message, chat::presence>(parser);
   not one, an element other than the one asked for, input that ran out, or
   the parser's own error.
 
+All of it is `constexpr`: a document is written with `to_xml` and read back
+with `read` inside a `static_assert` in the tests.
+
+## Speed
+
+Character data is taken in runs where the text is in memory: ASCII that
+stands for itself is found 32 bytes at a time, with Clang's vector types (SSE
+or AVX on x86, NEON on ARM, from the same code), and the rest is checked as
+UTF-8 16 bytes at a time with the lookup method simdjson uses (SSSE3, chosen
+at run time), then appended in one piece. The text an event refers to is kept
+in blocks that are used again, so a parser that has run a while allocates
+nothing more for it.
+
+`test/bench/text.cc`, a stanza with a body of 16 KB read through
+`chevron::events`, one core: 285 MB/s for ASCII, 276 MB/s for Cyrillic.
+
+Tested under AddressSanitizer and UndefinedBehaviorSanitizer as well.
+
 
 ## Building
 
