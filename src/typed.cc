@@ -854,6 +854,36 @@ constexpr Out write(Out out, const T& value) {
   return out;
 }
 
+// An element kept as it came, written as XML.
+template <std::output_iterator<char> Out>
+constexpr Out write(Out out, const any& kept) {
+  detail::writing::write_any(out, kept, std::string_view());
+  return out;
+}
+
+// An element kept as it came, read as a typed value: written out, and read
+// back in by the type's schema.
+template <described T>
+constexpr std::expected<T, read_error> from_any(const any& kept) {
+  std::string text;
+  write(std::back_inserter(text), kept);
+  parser source;
+  source.feed(text);
+  return read<T>(source);
+}
+
+// A typed value, kept as an element: written out, and read back in whole.
+template <described T>
+constexpr any to_any(const T& value) {
+  std::string text;
+  write(std::back_inserter(text), value);
+  parser source;
+  source.feed(text);
+  auto next = detail::reading::next_event(source);
+  auto kept = detail::reading::capture(source, std::get<start_element>(*next));
+  return std::move(*kept);
+}
+
 
 }  // namespace chevron
 
