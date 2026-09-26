@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // All of chevron: import chevron;
 export module chevron;
 

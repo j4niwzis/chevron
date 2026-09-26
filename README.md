@@ -130,3 +130,10 @@ cmake -S . -B build -G Ninja
 cmake --build build
 ctest --test-dir build
 ```
+
+## Licence
+
+GNU Affero General Public License, version 3 only (`AGPL-3.0-only`) -- the
+text is in `LICENSE`. A program that uses this library is a work based on
+it; whoever interacts with such a program over a network is offered its
+source, as the licence's section 13 says.

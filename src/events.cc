@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // Events pulled from a range: text | chevron::events is a view of the events
 // of an XML stream read from any input range of UTF-8 code units -- a string,
 // a stream read once, a socket, a generator -- unit by unit, as far as the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // The XML of streams, read as events: the subset of XML 1.0 (fifth edition)
 // with Namespaces in XML 1.0 that RFC 6120, section 11, allows -- UTF-8 only,
 // no comments, processing instructions, document type declarations or entity

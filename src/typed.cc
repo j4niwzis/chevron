@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // Typed reading and writing: XML read straight into plain structs, and
 // written from them, with no document object model between. A struct says nothing about XML; its schema, found
 // by argument-dependent lookup beside it, does:
