@@ -70,20 +70,29 @@ class tagged {
       "chevron: chevron::any may only be the last alternative of a tagged");
 
  public:
+  // Whether T is one of the alternatives.
+  template <class T>
+  static constexpr bool can_hold = (std::same_as<T, Alternatives> || ...);
+
   constexpr tagged() = default;
   template <class T>
     requires(std::same_as<std::remove_cvref_t<T>, Alternatives> || ...)
   constexpr tagged(T&& value) : data_(std::forward<T>(value)) {}
 
   template <class T>
+    requires can_hold<T>
   constexpr bool is() const noexcept { return std::holds_alternative<T>(data_); }
   template <class T>
+    requires can_hold<T>
   constexpr T& as() { return std::get<T>(data_); }
   template <class T>
+    requires can_hold<T>
   constexpr const T& as() const { return std::get<T>(data_); }
   template <class T>
+    requires can_hold<T>
   constexpr T* get_if() noexcept { return std::get_if<T>(&data_); }
   template <class T>
+    requires can_hold<T>
   constexpr const T* get_if() const noexcept { return std::get_if<T>(&data_); }
   constexpr std::variant<Alternatives...>& data() noexcept { return data_; }
   constexpr const std::variant<Alternatives...>& data() const noexcept { return data_; }
