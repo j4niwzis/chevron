@@ -95,6 +95,13 @@ struct schema_t {
   std::string_view uri{};
   std::string_view local{};
   bool named = false;
+  // An attribute with a value of its own, which says this type among several
+  // of one name: <message type="chat"> is one type, <message type="groupchat">
+  // another; absent means this one where or_absent says so.
+  bool has_when = false;
+  std::string_view when_local{};
+  std::string_view when_value{};
+  bool when_absent = false;
   std::array<members::descriptor, count> bound{};
   std::array<bool, count> said{};
 
@@ -104,6 +111,17 @@ struct schema_t {
     out.uri = in;
     out.local = local_part;
     out.named = true;
+    return out;
+  }
+
+  // The attribute that tells this type apart, and its value.
+  template <fixed_string Attribute>
+  constexpr schema_t when(std::string_view value, bool or_absent = false) const {
+    schema_t out = *this;
+    out.has_when = true;
+    out.when_local = Attribute.view();
+    out.when_value = value;
+    out.when_absent = or_absent;
     return out;
   }
 
@@ -148,6 +166,9 @@ template <class T>
 constexpr schema_t<T> schema() {
   return {};
 }
+
+// For .when(): the attribute may be absent, and then means this type.
+inline constexpr bool or_absent = true;
 
 // A type with a schema.
 template <class T>
@@ -547,7 +568,15 @@ constexpr std::expected<T, read_error> read_element(Source& source, const start_
 template <class T>
 constexpr bool is_named(const start_element& start) {
   constexpr auto schema = xml_schema(type<T>{});
-  return !schema.named || (start.name.uri == schema.uri && start.name.local == schema.local);
+  if (schema.named && (start.name.uri != schema.uri || start.name.local != schema.local))
+    return false;
+  if constexpr (schema.has_when) {
+    for (const attribute& one : start.attributes)
+      if (one.name.uri.empty() && one.name.local == schema.when_local)
+        return one.value == schema.when_value;
+    return schema.when_absent;
+  }
+  return true;
 }
 
 // A range of events -- std::expected<event, error> each, as text | events
@@ -815,6 +844,10 @@ constexpr void write_element(Out& out, const T& value, std::string_view uri, std
     };
     (one(std::integral_constant<std::size_t, I>{}), ...);
   }(std::make_index_sequence<count>{});
+  if constexpr (info::schema.has_when) {
+    if (!info::schema.when_absent)
+      attributes.emplace_back(std::string_view(), info::schema.when_local, std::string(info::schema.when_value));
+  }
 
   open(out, uri, local, in_effect, attributes);
   if (!has_content) {
@@ -1044,6 +1077,10 @@ class element_frame final : public frame {
       };
       (one(std::integral_constant<std::size_t, I>{}), ...);
     }(std::make_index_sequence<count>{});
+    if constexpr (info::schema.has_when) {
+      if (!info::schema.when_absent)
+        attributes.emplace_back(std::string_view(), info::schema.when_local, std::string(info::schema.when_value));
+    }
     buffer_ = start_tag(uri_, local_, in_effect_, attributes, !content);
     phase_ = content ? 1 : 2;
     return piece(buffer_);

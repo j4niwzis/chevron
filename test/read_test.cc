@@ -350,3 +350,52 @@ TEST(Read, ChoiceAttribute) {
 }
 
 }  // namespace
+
+namespace kinds {
+
+struct chat {
+  std::optional<std::string> body;
+};
+constexpr auto xml_schema(chevron::type<chat>) {
+  return chevron::schema<chat>().name("urn:example:client", "message").when<"type">("chat");
+}
+
+struct normal {
+  std::optional<std::string> body;
+};
+constexpr auto xml_schema(chevron::type<normal>) {
+  return chevron::schema<normal>().name("urn:example:client", "message").when<"type">("normal", chevron::or_absent);
+}
+
+}  // namespace kinds
+
+namespace {
+
+TEST(Read, TellingAttribute) {
+  const auto pick = [](std::string_view text) {
+    chevron::parser source;
+    source.feed(text);
+    return chevron::read_one_of<kinds::chat, kinds::normal>(source);
+  };
+  const auto chat = pick(R"(<message xmlns="urn:example:client" type="chat"><body>a</body></message>)");
+  ASSERT_TRUE(chat.has_value());
+  EXPECT_EQ(chat->index(), 0u);
+  const auto plain = pick(R"(<message xmlns="urn:example:client"><body>b</body></message>)");
+  ASSERT_TRUE(plain.has_value());
+  EXPECT_EQ(plain->index(), 1u);
+  const auto named = pick(R"(<message xmlns="urn:example:client" type="normal"/>)");
+  ASSERT_TRUE(named.has_value());
+  EXPECT_EQ(named->index(), 1u);
+  EXPECT_FALSE(pick(R"(<message xmlns="urn:example:client" type="headline"/>)").has_value());
+  // Written with its attribute; the one absent means, without.
+  EXPECT_EQ(chevron::to_xml(kinds::chat{"x"}) | std::ranges::to<std::string>(),
+            R"(<message xmlns="urn:example:client" type="chat"><body>x</body></message>)");
+  std::string eager;
+  auto out = std::back_inserter(eager);
+  chevron::write(out, kinds::chat{"x"});
+  EXPECT_EQ(eager, R"(<message xmlns="urn:example:client" type="chat"><body>x</body></message>)");
+  EXPECT_EQ(chevron::to_xml(kinds::normal{"y"}) | std::ranges::to<std::string>(),
+            R"(<message xmlns="urn:example:client"><body>y</body></message>)");
+}
+
+}  // namespace
