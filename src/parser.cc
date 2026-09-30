@@ -10,6 +10,7 @@
 export module chevron.parser;
 
 import std;
+import splice;
 
 export namespace chevron {
 
@@ -45,7 +46,7 @@ struct text {
   std::string_view content;
 };
 
-using event = std::variant<start_element, end_element, text>;
+using event = splice::variant<start_element, end_element, text>;
 
 enum class error_code : std::uint8_t {
   ill_formed_utf8,          // bytes that are not UTF-8

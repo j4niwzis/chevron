@@ -2,21 +2,22 @@
 // pieces cut where the input's own bytes say, must be the same -- the same
 // events, and the same error where there is one.
 import std;
+import splice;
 import chevron;
 
 namespace {
 
 std::string shown(const chevron::event& one) {
-  if (const auto* start = std::get_if<chevron::start_element>(&one)) {
+  if (const auto* start = splice::get_if<chevron::start_element>(&one)) {
     std::string out = "S{" + std::string(start->name.uri) + "}" + std::string(start->name.local);
     for (const auto& attribute : start->attributes)
       out += " {" + std::string(attribute.name.uri) + "}" + std::string(attribute.name.local) + "=" +
              std::string(attribute.value);
     return out;
   }
-  if (std::holds_alternative<chevron::end_element>(one))
+  if (splice::holds_alternative<chevron::end_element>(one))
     return "E";
-  return "T" + std::string(std::get<chevron::text>(one).content);
+  return "T" + std::string(splice::get<chevron::text>(one).content);
 }
 
 // The events, texts run together as a reader sees them, and how it ended.

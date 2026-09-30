@@ -26,6 +26,19 @@ cme_find_package(Boost COMPONENTS pfr[modules] REQUIRED)
 set(CHEVRON_CONSTEXPR_STEPS 100000000 CACHE STRING
   "clang's -fconstexpr-steps for chevron and what imports it")
 
+# splice: the variant chevron's nodes and choices are held in, and the
+# visiting -- with chevron's step count, so that they share one std.
+set(SPLICE_CONSTEXPR_STEPS ${CHEVRON_CONSTEXPR_STEPS} CACHE STRING
+  "clang's -fconstexpr-steps for splice, as chevron sets it")
+cme_declare_port(NAME splice PROVIDES splice
+  GITHUB_REPOSITORY j4niwzis/splice
+  GIT_TAG 39bc67a00185f488c989d3c18b98e5995e4dc8dd
+  LICENSE GPL-3.0-only
+  SYSTEM NEVER
+  TARGETS splice)
+cme_options(splice "SPLICE_TESTS OFF")
+cme_find_package(splice REQUIRED)
+
 # One module to a target, so that a change to one compiles again only it and
 # what imports it.
 # One library, libchevron.a, with its modules in one file set: modules are
@@ -36,7 +49,7 @@ add_library(chevron)
 target_sources(chevron PUBLIC FILE_SET CXX_MODULES BASE_DIRS src
   FILES src/parser.cc src/events.cc src/typed.cc src/chevron.cc)
 target_compile_features(chevron PUBLIC cxx_std_26)
-target_link_libraries(chevron PUBLIC Boost::pfr)
+target_link_libraries(chevron PUBLIC Boost::pfr splice)
 # A usage requirement of the library, as alef has. Besides giving constant
 # evaluation room, it makes the modules' settings differ from those of the
 # std target, so that CMake builds them against a std synthesized for them

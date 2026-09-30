@@ -19,6 +19,7 @@
 export module chevron.typed;
 
 import std;
+import splice;
 import boost.pfr;
 import chevron.parser;
 
@@ -49,7 +50,7 @@ struct any {
   std::vector<any_node> children;
 };
 struct any_node {
-  std::variant<any, std::string> value;  // an element, or text
+  splice::variant<any, std::string> value;  // an element, or text
 };
 
 // One of several element types, chosen by the element's name -- the one each
@@ -82,21 +83,21 @@ class tagged {
 
   template <class T>
     requires can_hold<T>
-  constexpr bool is() const noexcept { return std::holds_alternative<T>(data_); }
+  constexpr bool is() const noexcept { return splice::holds_alternative<T>(data_); }
   template <class T>
     requires can_hold<T>
-  constexpr T& as() { return std::get<T>(data_); }
+  constexpr T& as() { return splice::get<T>(data_); }
   template <class T>
     requires can_hold<T>
-  constexpr const T& as() const { return std::get<T>(data_); }
+  constexpr const T& as() const { return splice::get<T>(data_); }
   template <class T>
     requires can_hold<T>
-  constexpr T* get_if() noexcept { return std::get_if<T>(&data_); }
+  constexpr T* get_if() noexcept { return splice::get_if<T>(&data_); }
   template <class T>
     requires can_hold<T>
-  constexpr const T* get_if() const noexcept { return std::get_if<T>(&data_); }
-  constexpr std::variant<Alternatives...>& data() noexcept { return data_; }
-  constexpr const std::variant<Alternatives...>& data() const noexcept { return data_; }
+  constexpr const T* get_if() const noexcept { return splice::get_if<T>(&data_); }
+  constexpr splice::variant<Alternatives...>& data() noexcept { return data_; }
+  constexpr const splice::variant<Alternatives...>& data() const noexcept { return data_; }
 
   // f called with the alternative held: a branch for each, which the
   // optimizer can see through -- no table of functions called indirectly,
@@ -104,18 +105,18 @@ class tagged {
   template <class F>
   constexpr void with(F&& f) const {
     [&]<std::size_t... I>(std::index_sequence<I...>) {
-      ((data_.index() == I ? (void)f(*std::get_if<I>(&data_)) : void()), ...);
+      ((data_.index() == I ? (void)f(*splice::get_if<I>(&data_)) : void()), ...);
     }(std::index_sequence_for<Alternatives...>{});
   }
   template <class F>
   constexpr void with(F&& f) {
     [&]<std::size_t... I>(std::index_sequence<I...>) {
-      ((data_.index() == I ? (void)f(*std::get_if<I>(&data_)) : void()), ...);
+      ((data_.index() == I ? (void)f(*splice::get_if<I>(&data_)) : void()), ...);
     }(std::index_sequence_for<Alternatives...>{});
   }
 
  private:
-  std::variant<Alternatives...> data_;
+  splice::variant<Alternatives...> data_;
 };
 
 namespace members {
@@ -285,12 +286,12 @@ template <class... A> struct is_tagged<tagged<A...>> : std::true_type {};
 
 // A choice among empty types, each naming the text it stands for:
 //   struct chat { static constexpr std::string_view xml_value = "chat"; };
-//   std::variant<normal, chat, groupchat, headline, error> type;
+//   splice::variant<normal, chat, groupchat, headline, error> type;
 template <class T>
 struct is_choice : std::false_type {};
 template <class... Alternatives>
   requires(requires { std::string_view(Alternatives::xml_value); } && ...)
-struct is_choice<std::variant<Alternatives...>> : std::true_type {};
+struct is_choice<splice::variant<Alternatives...>> : std::true_type {};
 
 template <class T>
 concept text_like = std::same_as<T, std::string> || std::same_as<T, bool> ||
@@ -310,11 +311,11 @@ constexpr std::optional<T> value_of(std::string_view text) {
     // The alternative that names this text.
     std::optional<T> out;
     [&]<std::size_t... At>(std::index_sequence<At...>) {
-      (void)((text == std::variant_alternative_t<At, T>::xml_value
+      (void)((text == splice::variant_alternative_t<At, T>::xml_value
                   ? (out.emplace(std::in_place_index<At>), true)
                   : false) ||
              ...);
-    }(std::make_index_sequence<std::variant_size_v<T>>{});
+    }(std::make_index_sequence<splice::variant_size_v<T>>{});
     return out;
   } else {
     T out{};
@@ -355,12 +356,12 @@ constexpr std::expected<any, read_error> capture(Source& source, const start_ele
     auto next = next_event(source);
     if (!next)
       return std::unexpected(next.error());
-    if (const auto* child = std::get_if<start_element>(&*next)) {
+    if (const auto* child = splice::get_if<start_element>(&*next)) {
       auto inner = capture(source, *child);
       if (!inner)
         return std::unexpected(inner.error());
       out.children.push_back({std::move(*inner)});
-    } else if (const auto* piece = std::get_if<text>(&*next)) {
+    } else if (const auto* piece = splice::get_if<text>(&*next)) {
       out.children.push_back({std::string(piece->content)});
     } else {
       return out;
@@ -374,9 +375,9 @@ constexpr std::expected<void, read_error> skip(Source& source) {
     auto next = next_event(source);
     if (!next)
       return std::unexpected(next.error());
-    if (std::holds_alternative<start_element>(*next))
+    if (splice::holds_alternative<start_element>(*next))
       ++depth;
-    else if (std::holds_alternative<end_element>(*next))
+    else if (splice::holds_alternative<end_element>(*next))
       --depth;
   }
   return {};
@@ -390,9 +391,9 @@ constexpr std::expected<std::string, read_error> text_content(Source& source, st
     auto next = next_event(source);
     if (!next)
       return std::unexpected(next.error());
-    if (const auto* piece = std::get_if<text>(&*next))
+    if (const auto* piece = splice::get_if<text>(&*next))
       out += piece->content;
-    else if (std::holds_alternative<end_element>(*next))
+    else if (splice::holds_alternative<end_element>(*next))
       return out;
     else
       return std::unexpected(read_error{read_code::bad_value, std::string(where), std::nullopt});
@@ -534,9 +535,9 @@ constexpr std::expected<T, read_error> read_element(Source& source, const start_
     auto next = next_event(source);
     if (!next)
       return std::unexpected(next.error());
-    if (std::holds_alternative<end_element>(*next))
+    if (splice::holds_alternative<end_element>(*next))
       break;
-    if (const auto* piece = std::get_if<text>(&*next)) {
+    if (const auto* piece = splice::get_if<text>(&*next)) {
       [&]<std::size_t... I>(std::index_sequence<I...>) {
         const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
           if constexpr (info::template kind_of<K>() == members::kind::text) {
@@ -565,7 +566,7 @@ constexpr std::expected<T, read_error> read_element(Source& source, const start_
         return std::unexpected(*failure);
       continue;
     }
-    const start_element child = std::get<start_element>(*next);
+    const start_element child = splice::get<start_element>(*next);
     const std::string child_uri(child.name.uri);
     const std::string child_local(child.name.local);
     bool claimed = false;
@@ -740,7 +741,7 @@ constexpr auto next_significant(Source& source) {
   for (;;) {
     auto next = detail::reading::next_event(source);
     if (next) {
-      if (const auto* piece = std::get_if<text>(&*next);
+      if (const auto* piece = splice::get_if<text>(&*next);
           piece && std::ranges::all_of(piece->content, [](char one) {
             return one == ' ' || one == '\t' || one == '\n' || one == '\r';
           }))
@@ -756,7 +757,7 @@ constexpr std::expected<T, read_error> read(Source& source) {
   auto next = next_significant(source);
   if (!next)
     return std::unexpected(next.error());
-  const auto* start = std::get_if<start_element>(&*next);
+  const auto* start = splice::get_if<start_element>(&*next);
   if (!start || !detail::reading::is_named<T>(*start))
     return std::unexpected(read_error{read_code::unexpected_element,
                                       start ? std::string(start->name.local) : std::string(), std::nullopt});
@@ -773,19 +774,19 @@ constexpr std::expected<T, read_error> read(Range&& events) {
 
 // One element read into whichever of the types its name is.
 template <described... T, event_source Source>
-constexpr std::expected<std::variant<T...>, read_error> read_one_of(Source& source) {
+constexpr std::expected<splice::variant<T...>, read_error> read_one_of(Source& source) {
   auto next = next_significant(source);
   if (!next)
     return std::unexpected(next.error());
-  const auto* start = std::get_if<start_element>(&*next);
-  std::optional<std::expected<std::variant<T...>, read_error>> out;
+  const auto* start = splice::get_if<start_element>(&*next);
+  std::optional<std::expected<splice::variant<T...>, read_error>> out;
   if (start)
     ([&] {
       if (out || !detail::reading::is_named<T>(*start))
         return;
       auto one = detail::reading::read_element<T>(source, *start);
       if (one)
-        out.emplace(std::variant<T...>(std::in_place_type<T>, std::move(*one)));
+        out.emplace(splice::variant<T...>(std::in_place_type<T>, std::move(*one)));
       else
         out.emplace(std::unexpected(one.error()));
     }(), ...);
@@ -797,7 +798,7 @@ constexpr std::expected<std::variant<T...>, read_error> read_one_of(Source& sour
 
 template <described... T, std::ranges::input_range Range>
   requires(!event_source<Range>)
-constexpr std::expected<std::variant<T...>, read_error> read_one_of(Range&& events) {
+constexpr std::expected<splice::variant<T...>, read_error> read_one_of(Range&& events) {
   detail::reading::range_source<std::remove_reference_t<Range>> source(events);
   return read_one_of<T...>(source);
 }
@@ -864,7 +865,7 @@ constexpr std::string text_of(const T& value) {
   } else if constexpr (std::same_as<T, bool>) {
     return value ? "true" : "false";
   } else if constexpr (reading::is_choice<T>::value) {
-    return std::visit([](const auto& one) { return std::string(one.xml_value); }, value);
+    return splice::visit([](const auto& one) { return std::string(one.xml_value); }, value);
   } else {
     std::array<char, 64> digits{};
     const auto [end, problem] = std::to_chars(digits.data(), digits.data() + digits.size(), value);
@@ -919,10 +920,10 @@ constexpr void write_any(Out& out, const any& element, std::string_view in_effec
   }
   *out++ = '>';
   for (const any_node& child : element.children) {
-    if (const auto* text = std::get_if<std::string>(&child.value))
+    if (const auto* text = splice::get_if<std::string>(&child.value))
       put_text(out, *text);
     else
-      write_any(out, std::get<any>(child.value), element.uri);
+      write_any(out, splice::get<any>(child.value), element.uri);
   }
   put(out, "</");
   put(out, element.local);
@@ -1095,7 +1096,7 @@ constexpr any to_any(const T& value) {
   parser source;
   source.feed(text);
   auto next = detail::reading::next_event(source);
-  auto kept = detail::reading::capture(source, std::get<start_element>(*next));
+  auto kept = detail::reading::capture(source, splice::get<start_element>(*next));
   return std::move(*kept);
 }
 
@@ -1217,14 +1218,14 @@ class writer {
     if (at_[level].phase == 1) {
       while (at_[level].member < element.children.size()) {
         const any_node& one = element.children[at_[level].member];
-        if (const auto* text = std::get_if<std::string>(&one.value)) {
+        if (const auto* text = splice::get_if<std::string>(&one.value)) {
           ++at_[level].member;
           buffer_.clear();
           auto out = std::back_inserter(buffer_);
           put_text(out, *text);
           return std::string_view(buffer_);
         }
-        if (auto got = kept(std::get<any>(one.value), element.uri, level + 1))
+        if (auto got = kept(splice::get<any>(one.value), element.uri, level + 1))
           return got;
         at_.resize(level + 1);
         ++at_[level].member;

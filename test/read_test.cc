@@ -1,6 +1,7 @@
 // Typed reading: plain structs, schemas beside them, and XML read straight
 // into them.
 import std;
+import splice;
 import chevron;
 import gtest;
 
@@ -84,8 +85,8 @@ TEST(Read, AMessage) {
   ASSERT_EQ(x.attributes.size(), 1u);
   EXPECT_EQ(x.attributes[0].second, "1");
   ASSERT_EQ(x.children.size(), 2u);
-  EXPECT_EQ(std::get<std::string>(x.children[0].value), "kept ");
-  EXPECT_EQ(std::get<chevron::any>(x.children[1].value).local, "y");
+  EXPECT_EQ(splice::get<std::string>(x.children[0].value), "kept ");
+  EXPECT_EQ(splice::get<chevron::any>(x.children[1].value).local, "y");
 }
 
 TEST(Read, OptionalAndMissing) {
@@ -131,8 +132,8 @@ TEST(Read, OneOf) {
       events("<presence xmlns='urn:example:client'><show>away</show><priority>5</priority></presence>"));
   ASSERT_TRUE(p.has_value());
   ASSERT_EQ(p->index(), 1u);
-  EXPECT_EQ(std::get<chat::presence>(*p).show, std::optional<std::string>("away"));
-  EXPECT_EQ(std::get<chat::presence>(*p).priority, std::optional<int>(5));
+  EXPECT_EQ(splice::get<chat::presence>(*p).show, std::optional<std::string>("away"));
+  EXPECT_EQ(splice::get<chat::presence>(*p).priority, std::optional<int>(5));
 }
 
 TEST(Read, FromAParserFedAsBytesArrive) {
@@ -316,7 +317,7 @@ struct groupchat {
 };
 
 struct typed_note {
-  std::optional<std::variant<normal, chat_type, groupchat>> type;
+  std::optional<splice::variant<normal, chat_type, groupchat>> type;
   std::optional<std::string> body;
 };
 
@@ -338,7 +339,7 @@ TEST(Read, ChoiceAttribute) {
       chevron::events);
   ASSERT_TRUE(got.has_value());
   ASSERT_TRUE(got->type);
-  EXPECT_TRUE(std::holds_alternative<chat::groupchat>(*got->type));
+  EXPECT_TRUE(splice::holds_alternative<chat::groupchat>(*got->type));
   EXPECT_EQ(chevron::to_xml(*got) | std::ranges::to<std::string>(),
             R"(<note xmlns="urn:example:client" type="groupchat"><body>x</body></note>)");
   const auto none = chevron::read<chat::typed_note>(

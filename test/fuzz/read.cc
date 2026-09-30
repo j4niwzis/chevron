@@ -2,6 +2,7 @@
 // written by both writers, which must agree, and read again, which must
 // give what was written.
 import std;
+import splice;
 import chevron;
 
 namespace fz {
@@ -28,7 +29,7 @@ constexpr auto xml_schema(chevron::type<item>) {
 
 struct doc {
   std::optional<std::string> id;
-  std::optional<std::variant<kind_a, kind_b>> type;
+  std::optional<splice::variant<kind_a, kind_b>> type;
   chevron::kept_attributes rest;
   std::optional<std::string> body;
   std::optional<int> n;
