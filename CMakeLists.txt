@@ -34,7 +34,7 @@ set(SPLICE_CONSTEXPR_STEPS ${CHEVRON_CONSTEXPR_STEPS} CACHE STRING
 # prefix -- is as good as one fetched, and found first where there is one.
 cme_declare_port(NAME splice PROVIDES splice
   GITHUB_REPOSITORY j4niwzis/splice
-  GIT_TAG 807787820c035e01dac3a49f649625fb7e763a8b
+  GIT_TAG f2c25443061ba5353720eccd0a9438793c2ea053
   LICENSE GPL-3.0-only
   TARGETS splice::splice)
 cme_options(splice "SPLICE_TESTS OFF")
