@@ -63,7 +63,11 @@ std::vector<std::string> events(const std::vector<std::string_view>& pieces) {
 }  // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
-  const std::string_view input(reinterpret_cast<const char*>(data), size);
+  // The fuzzer's bytes as text, a byte at a time by value: no view of one
+  // type as another.
+  const std::string text = std::span(data, size) | std::views::transform([](std::uint8_t b) { return std::bit_cast<char>(b); }) |
+                           std::ranges::to<std::string>();
+  const std::string_view input(text);
   const auto whole = events({input});
   // Cut points from the input: after each byte whose low bits say so.
   std::vector<std::string_view> pieces;

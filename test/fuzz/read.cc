@@ -48,7 +48,11 @@ constexpr auto xml_schema(chevron::type<doc>) {
 }  // namespace fz
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
-  const std::string_view input(reinterpret_cast<const char*>(data), size);
+  // The fuzzer's bytes as text, a byte at a time by value: no view of one
+  // type as another.
+  const std::string text = std::span(data, size) | std::views::transform([](std::uint8_t b) { return std::bit_cast<char>(b); }) |
+                           std::ranges::to<std::string>();
+  const std::string_view input(text);
   const auto read = chevron::read<fz::doc>(input | chevron::events);
   if (!read)
     return 0;
