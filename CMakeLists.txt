@@ -34,7 +34,7 @@ set(SPLICE_CONSTEXPR_STEPS ${CHEVRON_CONSTEXPR_STEPS} CACHE STRING
 # prefix -- is as good as one fetched, and found first where there is one.
 cme_declare_port(NAME splice PROVIDES splice
   GITHUB_REPOSITORY j4niwzis/splice
-  GIT_TAG 2086e011a4a09dc5d3634649a4842f1fbb0cedde
+  GIT_TAG 807787820c035e01dac3a49f649625fb7e763a8b
   LICENSE GPL-3.0-only
   TARGETS splice::splice)
 cme_options(splice "SPLICE_TESTS OFF")
@@ -50,11 +50,8 @@ add_library(chevron)
 target_sources(chevron PUBLIC FILE_SET CXX_MODULES BASE_DIRS src
   FILES src/parser.cc src/events.cc src/typed.cc src/chevron.cc)
 target_compile_features(chevron PUBLIC cxx_std_26)
-# By the names an installed copy has too: splice::splice. Boost.PFR in this
-# build only: built here as a module, it is a target of this build directory,
-# and install(EXPORT) refuses one that needs it -- an installed copy finds
-# Boost.PFR again, as a module, in its config.
-target_link_libraries(chevron PUBLIC $<BUILD_INTERFACE:Boost::pfr> splice::splice)
+# By the names an installed copy has too: splice::splice.
+target_link_libraries(chevron PUBLIC Boost::pfr splice::splice)
 # A usage requirement of the library, as alef has. Besides giving constant
 # evaluation room, it makes the modules' settings differ from those of the
 # std target, so that CMake builds them against a std synthesized for them
@@ -101,33 +98,11 @@ endif()
 # The library, its module interface units -- a consumer compiles its own
 # binary interfaces from them -- and a package: find_package(chevron) on a
 # machine that has it installed finds it there, and what it needs again by
-# the same names, splice::splice and Boost.PFR as a module.
+# the same names, splice and Boost.PFR as a module -- cmake-everywhere says
+# them in the package, from the ports they came from.
 option(CHEVRON_INSTALL "Install chevron and its CMake package" ${PROJECT_IS_TOP_LEVEL})
 if(CHEVRON_INSTALL)
-  include(GNUInstallDirs)
-  include(CMakePackageConfigHelpers)
-  install(TARGETS chevron
-    EXPORT chevronTargets
-    FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_LIBDIR}/chevron/modules
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  install(EXPORT chevronTargets
-    NAMESPACE chevron::
-    CXX_MODULES_DIRECTORY modules
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/chevron)
-  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/chevronConfig.cmake"
-    "include(CMakeFindDependencyMacro)\n"
-    "find_dependency(splice)\n"
-    "find_dependency(boost_pfr COMPONENTS modules)\n"
-    "include(\"\${CMAKE_CURRENT_LIST_DIR}/chevronTargets.cmake\")\n"
-    "set_property(TARGET chevron::chevron APPEND PROPERTY INTERFACE_LINK_LIBRARIES Boost::pfr)\n"
-    "set_property(TARGET chevron::chevron APPEND PROPERTY IMPORTED_CXX_MODULES_LINK_LIBRARIES Boost::pfr)\n"
-    "if(NOT TARGET chevron)\n"
-    "  add_library(chevron ALIAS chevron::chevron)\n"
-    "endif()\n")
-  write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/chevronConfigVersion.cmake"
-    VERSION ${PROJECT_VERSION} COMPATIBILITY SameMinorVersion)
-  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/chevronConfig.cmake" "${CMAKE_CURRENT_BINARY_DIR}/chevronConfigVersion.cmake"
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/chevron)
+  cme_install_package(chevron)
 endif()
 
 # Fuzz targets, for libFuzzer: test/fuzz/CMakeLists.txt says how.
