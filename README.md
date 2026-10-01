@@ -16,6 +16,14 @@ Namespaces that RFC 6120, section 11, allows, read from bytes as they arrive.
     std::visit(handle, **next);
   }
   ```
+- **Or HTML, as a message carries it.** `chevron::parser(limits, chevron::dialect::html{})`
+  reads a fragment of HTML -- Matrix's `org.matrix.custom.html` -- as a browser
+  reads one, into the same events: names in lower case and in no namespace,
+  void elements (`<br>`, `<img ...>`) ended as they start, unquoted and bare
+  attributes, HTML's named references and numeric ones, a `<` or `&` that starts
+  nothing as text, end tags that close down to their element or are passed
+  over, an open `<p>` closed by a block and an `<li>` by the next, comments
+  passed over, and what is open at the end closed there. XML stays the default.
 - **From any range, never ahead.** `text | chevron::events` is a view of the
   events of any input range of UTF-8 code units -- a string, a stream read
   once, a socket, a generator -- read unit by unit up to the `<` or `>`

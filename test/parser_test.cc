@@ -64,6 +64,43 @@ std::vector<std::string> read(std::string_view document, std::size_t piece = std
 
 using shown_events = std::vector<std::string>;
 
+// The same, read as HTML (dialect::html).
+std::vector<std::string> read_html(std::string_view document, std::size_t piece = std::string_view::npos) {
+  chevron::parser p(chevron::limits{}, chevron::dialect::html{});
+  std::vector<std::string> out;
+  const auto drain = [&] {
+    for (;;) {
+      const auto next = p.next();
+      if (!next) {
+        out.push_back(shown(next.error()));
+        return false;
+      }
+      if (!*next)
+        return true;
+      out.push_back(shown(**next));
+    }
+  };
+  for (std::size_t at = 0; at < document.size(); at += piece) {
+    p.feed(document.substr(at, piece));
+    if (!drain())
+      return out;
+  }
+  p.finish();
+  drain();
+  return out;
+}
+// Text events run together, as what is read the same may come in pieces
+// that differ as the input does.
+std::vector<std::string> joined(std::vector<std::string> events) {
+  std::vector<std::string> out;
+  for (std::string& one : events)
+    if (!out.empty() && out.back().starts_with("T\"") && one.starts_with("T\""))
+      out.back() = out.back().substr(0, out.back().size() - 1) + one.substr(2);
+    else
+      out.push_back(std::move(one));
+  return out;
+}
+
 std::string error(error_code code, std::size_t offset) {
   return "!" + std::to_string(static_cast<int>(code)) + "@" + std::to_string(offset);
 }
@@ -283,3 +320,40 @@ TEST(Parser, LongTextChecked) {
 }
 
 }  // namespace
+
+TEST(Html, AFragmentWithTextAndElementsAtTheTop) {
+  EXPECT_EQ(read_html("<b>bold</b> <i>it</i><br>next<br/>line"),
+            (shown_events{"S{}b[]", "T\"bold\"", "E{}b", "T\" \"", "S{}i[]", "T\"it\"", "E{}i", "S{}br[]", "E{}br",
+                          "T\"next\"", "S{}br[]", "E{}br", "T\"line\""}));
+}
+
+TEST(Html, ReferencesAndStrayAmpersandsAndLessThans) {
+  EXPECT_EQ(joined(read_html("a &amp; &mdash; &#8212; &#x1F600; &bogus; b & c < d")),
+            (shown_events{"T\"a & \u2014 \u2014 \U0001F600 &bogus; b & c < d\""}));
+}
+
+TEST(Html, NamesInLowerCaseAttributesUnquotedAndBare) {
+  EXPECT_EQ(read_html("<IMG data-mx-emoticon SRC=mxc://a/b ALT=\":cat:\" height=32 src='again'>"),
+            (shown_events{"S{}img[{}data-mx-emoticon=,{}src=mxc://a/b,{}alt=:cat:,{}height=32]", "E{}img"}));
+  EXPECT_EQ(read_html("<a href=\"https://e.com/?a=1&amp;b=2\" title=\"x > y\">l</a>"),
+            (shown_events{"S{}a[{}href=https://e.com/?a=1&b=2,{}title=x > y]", "T\"l\"", "E{}a"}));
+}
+
+TEST(Html, ImpliedAndStrayEndTags) {
+  EXPECT_EQ(read_html("<p>one<p>two<ul><li>a<li>b</ul>"),
+            (shown_events{"S{}p[]", "T\"one\"", "E{}p", "S{}p[]", "T\"two\"", "E{}p", "S{}ul[]", "S{}li[]", "T\"a\"",
+                          "E{}li", "S{}li[]", "T\"b\"", "E{}li", "E{}ul"}));
+  EXPECT_EQ(read_html("<i>x</span>y</i><b>open"),
+            (shown_events{"S{}i[]", "T\"x\"", "T\"y\"", "E{}i", "S{}b[]", "T\"open\"", "E{}b"}));
+  EXPECT_EQ(read_html("<a><b><c>x</a>"), (shown_events{"S{}a[]", "S{}b[]", "S{}c[]", "T\"x\"", "E{}c", "E{}b", "E{}a"}));
+}
+
+TEST(Html, CommentsPassedOverAndAnUnclosedTagAsText) {
+  EXPECT_EQ(joined(read_html("a<!-- c -->b<!DOCTYPE html>c <unclosed")), (shown_events{"T\"abc <unclosed\""}));
+}
+
+TEST(Html, TheSameByteByByte) {
+  for (const std::string_view html : {std::string_view("<p>one<p>two &amp; <b>x</b><br>y < z &#x1F600;"),
+                                      std::string_view("<mx-reply><blockquote>q</blockquote></mx-reply>a<!--c-->b")})
+    EXPECT_EQ(joined(read_html(html, 1)), joined(read_html(html)));
+}

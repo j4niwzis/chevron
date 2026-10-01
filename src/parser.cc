@@ -77,6 +77,28 @@ struct error {
   friend constexpr bool operator==(const error&, const error&) = default;
 };
 
+// What is read: XML as RFC 6120 allows it -- the default -- or HTML as a
+// message carries it (Matrix's org.matrix.custom.html, XHTML-IM's body read
+// loosely): a fragment, read as a browser reads one. In HTML, nothing but
+// bytes that are not UTF-8 is an error:
+// - text and elements at the top level, any number; what is open at the
+//   end of the input closed there;
+// - names in any case, read in lower case, in no namespace;
+// - the void elements (br, img, hr, ...) ended as they start;
+// - attributes with unquoted values, or none, and a name said twice taken
+//   once;
+// - the references HTML names, and numeric ones; an & that starts none is
+//   text, as is a < that starts no tag;
+// - an end tag closes what is open down to its element, or is passed over
+//   where none is open; a p is closed by a block that starts in it, an li
+//   by the next li;
+// - comments, document types and processing instructions passed over.
+namespace dialect {
+struct xml {};
+struct html {};
+}  // namespace dialect
+using dialect_t = splice::variant<dialect::xml, dialect::html>;
+
 // What the parser holds to at most, against input that would exhaust it.
 struct limits {
   std::size_t depth = 64;               // elements open at once
@@ -184,6 +206,36 @@ constexpr void encode(std::string& out, char32_t cp) {
     out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
   }
 }
+
+// The references HTML names that a message is likely to carry -- HTML's
+// own list has two thousand -- and what each stands for.
+inline constexpr std::pair<std::string_view, std::string_view> html_entities[] = {
+    {"amp", "&"},       {"lt", "<"},        {"gt", ">"},        {"quot", "\""},     {"apos", "'"},
+    {"nbsp", "\u00A0"}, {"ensp", "\u2002"}, {"emsp", "\u2003"}, {"thinsp", "\u2009"}, {"zwnj", "\u200C"},
+    {"zwj", "\u200D"},  {"shy", "\u00AD"},  {"copy", "\u00A9"}, {"reg", "\u00AE"},  {"trade", "\u2122"},
+    {"hellip", "\u2026"}, {"mdash", "\u2014"}, {"ndash", "\u2013"}, {"lsquo", "\u2018"}, {"rsquo", "\u2019"},
+    {"sbquo", "\u201A"}, {"ldquo", "\u201C"}, {"rdquo", "\u201D"}, {"bdquo", "\u201E"}, {"laquo", "\u00AB"},
+    {"raquo", "\u00BB"}, {"lsaquo", "\u2039"}, {"rsaquo", "\u203A"}, {"middot", "\u00B7"}, {"bull", "\u2022"},
+    {"deg", "\u00B0"},  {"times", "\u00D7"}, {"divide", "\u00F7"}, {"plusmn", "\u00B1"}, {"minus", "\u2212"},
+    {"euro", "\u20AC"}, {"pound", "\u00A3"}, {"yen", "\u00A5"},  {"cent", "\u00A2"},  {"curren", "\u00A4"},
+    {"sect", "\u00A7"}, {"para", "\u00B6"},  {"dagger", "\u2020"}, {"Dagger", "\u2021"}, {"permil", "\u2030"},
+    {"prime", "\u2032"}, {"Prime", "\u2033"}, {"frac12", "\u00BD"}, {"frac14", "\u00BC"}, {"frac34", "\u00BE"},
+    {"sup1", "\u00B9"}, {"sup2", "\u00B2"},  {"sup3", "\u00B3"},  {"micro", "\u00B5"}, {"iexcl", "\u00A1"},
+    {"iquest", "\u00BF"}, {"larr", "\u2190"}, {"uarr", "\u2191"}, {"rarr", "\u2192"},  {"darr", "\u2193"},
+    {"harr", "\u2194"}, {"lArr", "\u21D0"},  {"rArr", "\u21D2"},  {"hArr", "\u21D4"},  {"le", "\u2264"},
+    {"ge", "\u2265"},   {"ne", "\u2260"},    {"asymp", "\u2248"}, {"equiv", "\u2261"}, {"infin", "\u221E"},
+    {"sum", "\u2211"},  {"prod", "\u220F"},  {"radic", "\u221A"}, {"part", "\u2202"},  {"nabla", "\u2207"},
+    {"isin", "\u2208"}, {"notin", "\u2209"}, {"cap", "\u2229"},   {"cup", "\u222A"},   {"and", "\u2227"},
+    {"or", "\u2228"},   {"not", "\u00AC"},   {"forall", "\u2200"}, {"exist", "\u2203"}, {"empty", "\u2205"},
+    {"alpha", "\u03B1"}, {"beta", "\u03B2"}, {"gamma", "\u03B3"}, {"delta", "\u03B4"}, {"epsilon", "\u03B5"},
+    {"lambda", "\u03BB"}, {"mu", "\u03BC"},  {"pi", "\u03C0"},    {"sigma", "\u03C3"}, {"omega", "\u03C9"},
+    {"Delta", "\u0394"}, {"Sigma", "\u03A3"}, {"Omega", "\u03A9"}, {"spades", "\u2660"}, {"clubs", "\u2663"},
+    {"hearts", "\u2665"}, {"diams", "\u2666"}, {"check", "\u2713"}, {"cross", "\u2717"}, {"star", "\u2606"},
+    {"starf", "\u2605"}, {"loz", "\u25CA"},   {"oline", "\u203E"}, {"frasl", "\u2044"}, {"acute", "\u00B4"},
+    {"cedil", "\u00B8"}, {"uml", "\u00A8"},  {"macr", "\u00AF"},  {"ordf", "\u00AA"},  {"ordm", "\u00BA"},
+    {"szlig", "\u00DF"}, {"agrave", "\u00E0"}, {"aacute", "\u00E1"}, {"auml", "\u00E4"}, {"eacute", "\u00E9"},
+    {"egrave", "\u00E8"}, {"ouml", "\u00F6"}, {"uuml", "\u00FC"}, {"ntilde", "\u00F1"}, {"ccedil", "\u00E7"},
+};
 
 }  // namespace chevron::detail
 
@@ -391,6 +443,10 @@ class parser {
  public:
   constexpr parser() = default;
   constexpr explicit parser(limits held) : limits_(held) {}
+  constexpr parser(limits held, dialect_t read)
+      : limits_(held),
+        html_(splice::visit(splice::overloaded{[](dialect::xml) { return false; }, [](dialect::html) { return true; }},
+                            read)) {}
 
   // More of the input, in a piece of any size, split anywhere -- inside a
   // tag, a reference or a UTF-8 sequence as well.
@@ -457,8 +513,8 @@ class parser {
 
   constexpr result step() {
     kept_.clear();
-    if (pending_end_) {
-      pending_end_ = false;
+    if (pending_ends_ > 0) {
+      --pending_ends_;
       return close_top();
     }
     buffer_.erase(0, at_);
@@ -468,12 +524,17 @@ class parser {
     if (in.empty()) {
       if (!finished_)
         return std::nullopt;
+      // HTML: what is open, closed at the end -- a fragment, not a document.
+      if (html_)
+        return open_.empty() ? result(std::nullopt) : close_top();
       if (!open_.empty() || !seen_root_)
         return fail(error_code::unexpected_end, 0);
       return std::nullopt;
     }
     if (in[0] != '<')
       return character_data(in);
+    if (html_)
+      return html_markup(in);
     if (in.size() < 2)
       return wait(in);
     if (in[1] == '?')
@@ -483,6 +544,211 @@ class parser {
     if (in[1] == '/')
       return end_tag(in);
     return start_tag(in);
+  }
+
+  // HTML: what starts with '<'. A tag, an end tag, something passed over --
+  // or, where it starts none, the '<' as text.
+  constexpr result html_markup(std::string_view in) {
+    if (in.size() < 2)
+      return finished_ ? as_text(in) : wait(in);
+    const auto letter = [](char one) { return (one >= 'a' && one <= 'z') || (one >= 'A' && one <= 'Z'); };
+    if (in[1] == '!' || in[1] == '?') {
+      // A comment, to its -->; else a document type or the like, to its >.
+      const bool comment = in.starts_with("<!--");
+      if (!comment && std::string_view("<!--").starts_with(in) && !finished_)
+        return wait(in);
+      const std::size_t end = comment ? in.find("-->", 4) : in.find('>');
+      if (end == std::string_view::npos)
+        return finished_ ? as_text(in) : wait(in);
+      at_ = end + (comment ? 3 : 1);
+      return step();
+    }
+    if (in[1] == '/') {
+      if (in.size() < 3)
+        return finished_ ? as_text(in) : wait(in);
+      if (!letter(in[2])) {
+        // "</>" and the like: passed over to their '>'.
+        const std::size_t end = in.find('>');
+        if (end == std::string_view::npos)
+          return finished_ ? as_text(in) : wait(in);
+        at_ = end + 1;
+        return step();
+      }
+      return html_end_tag(in);
+    }
+    if (!letter(in[1])) {
+      at_ = 1;
+      return text{keep("<")};
+    }
+    return html_start_tag(in);
+  }
+
+  // What is left, at the end of the input, as text: a tag never closed.
+  constexpr result as_text(std::string_view in) {
+    at_ = in.size();
+    return text{keep(std::string(in))};
+  }
+
+  // An HTML name at in[at]: letters, digits and - _ . : -- in lower case.
+  static constexpr std::size_t html_name_end(std::string_view in, std::size_t at, std::size_t to) {
+    while (at < to) {
+      const char one = in[at];
+      if (detail::space(one) || one == '/' || one == '>' || one == '=' || one == '"' || one == '\'' || one == '<')
+        break;
+      ++at;
+    }
+    return at;
+  }
+  static constexpr std::string lower(std::string_view name) {
+    std::string out(name);
+    for (char& one : out)
+      if (one >= 'A' && one <= 'Z')
+        one = static_cast<char>(one - 'A' + 'a');
+    return out;
+  }
+  // The void elements: ended as they start.
+  static constexpr bool void_element(std::string_view name) {
+    constexpr std::string_view voids[] = {"area", "base", "br",   "col",   "embed",  "hr",    "img",
+                                          "input", "link", "meta", "param", "source", "track", "wbr"};
+    return std::ranges::contains(voids, name);
+  }
+  // Those that start a block: an open p is closed before them.
+  static constexpr bool closes_p(std::string_view name) {
+    constexpr std::string_view blocks[] = {"p",  "div", "ul", "ol", "dl", "li", "blockquote", "pre", "table",
+                                           "hr", "h1",  "h2", "h3", "h4", "h5", "h6",         "details", "figure"};
+    return std::ranges::contains(blocks, name);
+  }
+
+  // A reference in HTML at in[at] == '&', resolved into `out` -- numeric, or
+  // by a name HTML knows; where it is none, the '&' as it is. Where it ends.
+  constexpr std::size_t html_reference(std::string_view in, std::size_t at, std::size_t to, std::string& out) const {
+    const std::size_t end = in.substr(0, to).find(';', at);
+    if (end == std::string_view::npos || end - at > 33) {
+      out.push_back('&');
+      return at + 1;
+    }
+    const std::string_view name = in.substr(at + 1, end - at - 1);
+    if (name.starts_with('#')) {
+      const bool hex = name.starts_with("#x") || name.starts_with("#X");
+      const std::string_view digits = name.substr(hex ? 2 : 1);
+      char32_t cp = 0;
+      bool good = !digits.empty() && digits.size() <= 8;
+      for (const char one : digits) {
+        std::uint32_t d = 0;
+        if (one >= '0' && one <= '9')
+          d = static_cast<std::uint32_t>(one - '0');
+        else if (hex && one >= 'a' && one <= 'f')
+          d = static_cast<std::uint32_t>(one - 'a' + 10);
+        else if (hex && one >= 'A' && one <= 'F')
+          d = static_cast<std::uint32_t>(one - 'A' + 10);
+        else
+          good = false;
+        cp = cp * (hex ? 16 : 10) + d;
+      }
+      if (!good) {
+        out.push_back('&');
+        return at + 1;
+      }
+      // What HTML puts in the place of what is no character: U+FFFD.
+      detail::encode(out, detail::character(cp) && cp != 0 ? cp : U'\uFFFD');
+      return end + 1;
+    }
+    for (const auto& [known, said] : detail::html_entities)
+      if (name == known) {
+        out.append(said);
+        return end + 1;
+      }
+    out.push_back('&');
+    return at + 1;
+  }
+
+  // An HTML start tag: its name and attributes as HTML has them -- in lower
+  // case, in no namespace, unquoted or bare, the first of a name taken.
+  constexpr result html_start_tag(std::string_view in) {
+    const std::size_t end = tag_end(in);
+    if (end == std::string_view::npos)
+      return finished_ ? as_text(in) : wait(in);
+    const bool self_closed = end >= 3 && in[end - 2] == '/';
+    const std::size_t body_end = self_closed ? end - 2 : end - 1;
+    const std::size_t name_to = html_name_end(in, 1, body_end);
+    const std::string name = lower(in.substr(1, name_to - 1));
+    // What it closes, before it: a p a block starts in, an li the next li.
+    if (!open_.empty() && ((open_.back().raw == "p" && closes_p(name)) || (open_.back().raw == "li" && name == "li")))
+      return close_top();  // the tag read again at the next step
+    attributes_.clear();
+    std::size_t at = name_to;
+    while (at < body_end) {
+      if (detail::space(in[at]) || in[at] == '/') {
+        ++at;
+        continue;
+      }
+      const std::size_t attribute_to = html_name_end(in, at, body_end);
+      if (attribute_to == at) {
+        ++at;  // a stray quote or '=': passed over
+        continue;
+      }
+      const std::string attribute_name = lower(in.substr(at, attribute_to - at));
+      at = attribute_to;
+      while (at < body_end && detail::space(in[at]))
+        ++at;
+      std::string value;
+      if (at < body_end && in[at] == '=') {
+        ++at;
+        while (at < body_end && detail::space(in[at]))
+          ++at;
+        std::size_t from = at, to = at;
+        if (at < body_end && (in[at] == '"' || in[at] == '\'')) {
+          const char quote = in[at];
+          from = at + 1;
+          to = in.find(quote, from);
+          if (to == std::string_view::npos || to > body_end)
+            to = body_end;
+          at = std::min(to + 1, body_end);
+        } else {
+          while (to < body_end && !detail::space(in[to]))
+            ++to;
+          at = to;
+        }
+        for (std::size_t k = from; k < to;) {
+          if (in[k] == '&') {
+            k = html_reference(in, k, to, value);
+            continue;
+          }
+          std::size_t run = k;
+          while (run < to && in[run] != '&')
+            ++run;
+          if (const auto bad = checked_characters(in, k, run, value))
+            return std::unexpected(*bad);
+          k = run;
+        }
+      }
+      const std::string_view kept_name = keep(attribute_name);
+      if (std::ranges::none_of(attributes_, [&](const attribute& seen) { return seen.name.local == kept_name; }) &&
+          attributes_.size() < limits_.attributes)
+        attributes_.push_back({qname{{}, kept_name}, keep(std::move(value))});
+    }
+    if (open_.size() + 1 > limits_.depth)
+      return fail(error_code::too_deep, 0);
+    open_.push_back({name, bindings_.size()});
+    seen_root_ = true;
+    at_ = end;
+    pending_ends_ = self_closed || void_element(name) ? 1 : 0;
+    return start_element{qname{{}, keep(name)}, attributes_};
+  }
+
+  // An HTML end tag: what is open closed down to its element; passed over
+  // where none of it is open.
+  constexpr result html_end_tag(std::string_view in) {
+    const std::size_t end = in.find('>');
+    if (end == std::string_view::npos)
+      return finished_ ? as_text(in) : wait(in);
+    const std::string name = lower(in.substr(2, html_name_end(in, 2, end) - 2));
+    at_ = end + 1;
+    const auto found = std::ranges::find(open_.rbegin(), open_.rend(), name, &open_element::raw);
+    if (found == open_.rend())
+      return step();
+    pending_ends_ = static_cast<std::size_t>(found - open_.rbegin());
+    return close_top();
   }
 
   // Not enough of the input yet: wait for more, unless there will be none or
@@ -675,6 +941,8 @@ class parser {
   // which is not reported.
   constexpr result character_data(std::string_view in) {
     const std::size_t end = in.find('<');
+    if (html_)
+      return html_text(in, end);
     if (open_.empty()) {
       const std::size_t stop = end == std::string_view::npos ? in.size() : end;
       for (std::size_t at = 0; at < stop; ++at)
@@ -709,6 +977,30 @@ class parser {
           break;
         ++run;
       }
+      if (const auto bad = checked_characters(in, at, run, content))
+        return std::unexpected(*bad);
+      at = run;
+    }
+    at_ = end;
+    return text{keep(std::move(content))};
+  }
+
+  // HTML's text, up to the next '<' -- anywhere, its references read as
+  // HTML reads them.
+  constexpr result html_text(std::string_view in, std::size_t end) {
+    if (end == std::string_view::npos) {
+      if (!finished_)
+        return wait(in);
+      end = in.size();
+    }
+    std::string content;
+    content.reserve(end);
+    for (std::size_t at = 0; at < end;) {
+      if (in[at] == '&') {
+        at = html_reference(in, at, end, content);
+        continue;
+      }
+      const std::size_t run = std::min(in.substr(0, end).find('&', at), end);
       if (const auto bad = checked_characters(in, at, run, content))
         return std::unexpected(*bad);
       at = run;
@@ -884,7 +1176,7 @@ class parser {
     open_.push_back({std::string(raw), mark});
     seen_root_ = true;
     at_ = end;
-    pending_end_ = empty;
+    pending_ends_ = empty ? 1 : 0;
     return start_element{*element, attributes_};
   }
 
@@ -908,6 +1200,10 @@ class parser {
   // with it.
   constexpr result close_top() {
     const open_element top = open_.back();
+    if (html_) {
+      open_.pop_back();
+      return end_element{qname{{}, keep(top.raw)}};
+    }
     const std::size_t colon = top.raw.find(':');
     const std::string_view prefix =
         colon == std::string::npos ? std::string_view() : std::string_view(top.raw).substr(0, colon);
@@ -927,7 +1223,8 @@ class parser {
   bool finished_ = false;
   bool seen_root_ = false;
   bool root_ended_ = false;
-  bool pending_end_ = false;  // an empty-element tag's end, to be reported
+  std::size_t pending_ends_ = 0;  // ends still to be reported: an empty tag's, those an HTML end tag closes
+  bool html_ = false;             // read as HTML (dialect::html), not XML
   std::optional<error> failed_;
   std::vector<open_element> open_;
   std::vector<std::pair<std::string, std::string>> bindings_;  // prefix, URI
