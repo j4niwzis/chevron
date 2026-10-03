@@ -6,7 +6,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/cmake/import-std.cmake)
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-project(chevron VERSION 0.1 LANGUAGES CXX)
+project(chevron VERSION 0.2 LANGUAGES CXX)
 
 option(CHEVRON_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
 
