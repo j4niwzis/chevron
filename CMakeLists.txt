@@ -48,7 +48,7 @@ cme_find_package(splice REQUIRED)
 # reading and the module that imports them -- so it has no components.
 add_library(chevron)
 target_sources(chevron PUBLIC FILE_SET CXX_MODULES BASE_DIRS src
-  FILES src/parser.cc src/events.cc src/typed.cc src/chevron.cc)
+  FILES src/parser.cc src/events.cc src/escape.cc src/typed.cc src/chevron.cc)
 target_compile_features(chevron PUBLIC cxx_std_26)
 # By the names an installed copy has too: splice::splice.
 target_link_libraries(chevron PUBLIC Boost::pfr splice::splice)

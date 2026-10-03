@@ -22,6 +22,7 @@ import std;
 import splice;
 import boost.pfr;
 import chevron.parser;
+import chevron.escape;
 
 export namespace chevron {
 
@@ -818,44 +819,15 @@ constexpr void put(Out& out, std::string_view text) {
     *out++ = one;
 }
 
-// Character data: what would end it or start markup, as references.
+// Character data, and an attribute value in double quotes: escaped as
+// chevron.escape says.
 template <class Out>
 constexpr void put_text(Out& out, std::string_view text) {
-  for (const char one : text) {
-    if (one == '&')
-      put(out, "&amp;");
-    else if (one == '<')
-      put(out, "&lt;");
-    else if (one == '>')
-      put(out, "&gt;");
-    else if (one == '\r')
-      put(out, "&#xD;");
-    else
-      *out++ = one;
-  }
+  out = std::ranges::copy(escaped_text(text), std::move(out)).out;
 }
-
-// An attribute value in double quotes: white space other than a space as
-// references too, which attribute-value normalization would otherwise turn
-// into spaces.
 template <class Out>
 constexpr void put_value(Out& out, std::string_view text) {
-  for (const char one : text) {
-    if (one == '&')
-      put(out, "&amp;");
-    else if (one == '<')
-      put(out, "&lt;");
-    else if (one == '"')
-      put(out, "&quot;");
-    else if (one == '\t')
-      put(out, "&#x9;");
-    else if (one == '\n')
-      put(out, "&#xA;");
-    else if (one == '\r')
-      put(out, "&#xD;");
-    else
-      *out++ = one;
-  }
+  out = std::ranges::copy(escaped_value(text), std::move(out)).out;
 }
 
 template <class T>
