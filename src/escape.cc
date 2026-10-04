@@ -85,4 +85,6 @@ template <characters Chars>
   return escaped_value(std::forward<Chars>(chars)) | std::ranges::to<std::string>();
 }
 
+static_assert(escaped<const std::string&>(static_cast<const std::string&>("hello <")) != "hello <"); // Compiler bug workaround
+
 }  // namespace chevron
