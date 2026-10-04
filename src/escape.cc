@@ -53,6 +53,7 @@ namespace detail {
   switch (c) {
     case '&': return detail::entity("&amp;");
     case '<': return detail::entity("&lt;");
+    case '>': return detail::entity("&gt;");
     case '"': return detail::entity("&quot;");
     case '\t': return detail::entity("&#x9;");
     case '\n': return detail::entity("&#xA;");

@@ -1,6 +1,7 @@
 // chevron.escape: text made safe inside markup -- from any range of
 // characters, lazily -- and the one string made of it.
 import std;
+import splice;
 import chevron;
 import gtest;
 
@@ -13,7 +14,7 @@ TEST(Escape, CharacterData) {
 }
 
 TEST(Escape, AttributeValues) {
-  EXPECT_EQ(chevron::escaped("say \"hi\"\t&\n<x>"sv), "say &quot;hi&quot;&#x9;&amp;&#xA;&lt;x>");
+  EXPECT_EQ(chevron::escaped("say \"hi\"\t&\n<x>"sv), "say &quot;hi&quot;&#x9;&amp;&#xA;&lt;x&gt;");
 }
 
 TEST(Escape, PlainTextIsItself) {
@@ -30,4 +31,20 @@ TEST(Escape, LazyInput) {
 TEST(Escape, IsConstant) {
   static_assert(chevron::escaped("<&\""sv) == "&lt;&amp;&quot;");
   SUCCEED();
+}
+
+TEST(Escape, SafeInXmlCharacterDataToo) {
+  const std::string escaped = chevron::escaped("]]>"sv);
+  EXPECT_EQ(escaped, "]]&gt;");
+  chevron::parser parser;
+  parser.feed("<a>" + escaped + "</a>");
+  parser.finish();
+  std::string text;
+  for (;;) {
+    auto next = parser.next();
+    ASSERT_TRUE(next.has_value());
+    if (!*next) break;
+    if (const auto* piece = splice::get_if<chevron::text>(&**next)) text += piece->content;
+  }
+  EXPECT_EQ(text, "]]>"sv);
 }

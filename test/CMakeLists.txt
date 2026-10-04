@@ -43,3 +43,7 @@ add_test(NAME read COMMAND chevron-read-test)
 
 add_executable(chevron-bench-text bench/text.cc)
 target_link_libraries(chevron-bench-text PRIVATE chevron)
+
+add_executable(chevron-allocation-test allocation_test.cc)
+target_link_libraries(chevron-allocation-test PRIVATE chevron)
+add_test(NAME allocation COMMAND chevron-allocation-test)

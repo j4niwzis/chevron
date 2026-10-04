@@ -477,3 +477,203 @@ TEST(Read, Tagged) {
   ASSERT_TRUE(answer_back.has_value()) << answer_written;
   EXPECT_EQ(answer_back->payload.as<version>().name, "ejabberd");
 }
+
+namespace streaming_test {
+struct node {
+  std::string value;
+  std::vector<node> children;
+};
+constexpr auto xml_schema(chevron::type<node>) {
+  using namespace chevron::members;
+  return chevron::schema<node>().name("", "node").members(attribute(), child("node"));
+}
+struct number { int value = 0; };
+constexpr auto xml_schema(chevron::type<number>) {
+  return chevron::schema<number>().name("", "number").members(chevron::members::text());
+}
+}
+
+TEST(Read, ResumesAcrossEveryFeedBoundary) {
+  const std::string_view document =
+      "<message xmlns='urn:example:client' to='a' from='b'><body>hi &amp; \xD0\xBC\xD0\xB8\xD1\x80</body>"
+      "<x xmlns='urn:x' a='1'>kept <y/> tail</x></message>";
+  for (std::size_t split = 0; split <= document.size(); ++split) {
+    chevron::parser parser;
+    chevron::reader<chat::message> reader;
+    parser.feed(document.substr(0, split));
+    auto result = reader.next(parser);
+    ASSERT_TRUE(result) << split;
+    if (!*result) {
+      parser.feed(document.substr(split));
+      result = reader.next(parser);
+    }
+    ASSERT_TRUE(result && *result) << split;
+    EXPECT_EQ((**result).body, "hi & \xD0\xBC\xD0\xB8\xD1\x80");
+    ASSERT_EQ((**result).extensions.size(), 1u);
+    EXPECT_EQ((**result).extensions[0].uri, "urn:x");
+    EXPECT_EQ((**result).extensions[0].children.size(), 3u);
+    EXPECT_TRUE(reader.finish());
+  }
+}
+
+TEST(Read, BytewiseTaggedAndCapturedChildren) {
+  const std::string_view document =
+      "<message xmlns='jabber:client'><body>hi</body>"
+      "<delay xmlns='urn:xmpp:delay' stamp='now'/>"
+      "<x xmlns='urn:x'>before<y><z/></y>after</x></message>";
+  chevron::parser parser;
+  chevron::reader<tagged_test::note> reader;
+  for (std::size_t i = 0; i < document.size(); ++i) {
+    parser.feed(document.substr(i, 1));
+    auto result = reader.next(parser);
+    ASSERT_TRUE(result) << i;
+    if (i + 1 != document.size()) { EXPECT_FALSE(*result); continue; }
+    ASSERT_TRUE(*result);
+    auto& value = **result;
+    EXPECT_EQ(value.body, "hi");
+    ASSERT_EQ(value.extensions.size(), 2u);
+    EXPECT_EQ(value.extensions[0].as<tagged_test::delay>().stamp, "now");
+    const auto& kept = value.extensions[1].as<chevron::any>();
+    ASSERT_EQ(kept.children.size(), 3u);
+    EXPECT_EQ(splice::get<chevron::any>(kept.children[1].value).local, "y");
+  }
+}
+
+TEST(Read, ReusesReaderForStanzasInsideAnOpenStream) {
+  chevron::parser parser;
+  parser.feed(std::string_view("<stream xmlns='urn:example:client'>"));
+  ASSERT_TRUE(parser.next().value());
+  chevron::reader<chat::message, chat::presence> reader;
+  parser.feed(std::string_view("<presence><priority>1<![CDATA[2]]></priority></presence>"
+                               "<message to='a' from='b'><body>hi</body></message>"));
+  auto first = reader.next(parser);
+  ASSERT_TRUE(first && *first);
+  EXPECT_EQ(splice::get<chat::presence>(**first).priority, 12);
+  auto second = reader.next(parser);
+  ASSERT_TRUE(second && *second);
+  EXPECT_EQ(splice::get<chat::message>(**second).body, "hi");
+  EXPECT_FALSE(*reader.next(parser));
+  EXPECT_TRUE(reader.finish());
+}
+
+TEST(Read, PartialStateCanMoveAndErrorsPersistUntilReset) {
+  chevron::parser parser;
+  parser.feed(std::string_view("<presence xmlns='urn:example:client'><priority>"));
+  chevron::reader<chat::presence> reader;
+  ASSERT_FALSE(*reader.next(parser));
+  auto moved = std::move(reader);
+  parser.feed(std::string_view("42</priority></presence>"));
+  auto value = moved.next(parser);
+  ASSERT_TRUE(value && *value);
+  EXPECT_EQ((**value).priority, 42);
+  chevron::parser incomplete;
+  incomplete.feed(std::string_view("<presence xmlns='urn:example:client'>"));
+  ASSERT_FALSE(*moved.next(incomplete));
+  EXPECT_EQ(moved.finish().error().code, chevron::read_code::incomplete);
+  EXPECT_EQ(moved.next(incomplete).error().code, chevron::read_code::incomplete);
+  moved.reset();
+  chevron::parser invalid;
+  invalid.feed(std::string_view("<presence xmlns='urn:example:client'><priority>x</priority></presence>"));
+  EXPECT_EQ(moved.next(invalid).error().code, chevron::read_code::bad_value);
+  moved.reset();
+  chevron::parser malformed;
+  malformed.feed(std::string_view("<presence xmlns='urn:example:client'></wrong>"));
+  EXPECT_EQ(moved.next(malformed).error().code, chevron::read_code::parse);
+}
+
+TEST(Read, ScalarTextCombinesEventsAndUnknownChildrenAreSkipped) {
+  auto result = chevron::read<streaming_test::number>(events("<number>1<skip><nested/></skip><![CDATA[2]]>3</number>"));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->value, 123);
+  chevron::reader<streaming_test::number> reader;
+  for (auto event : events("<number>4<![CDATA[2]]></number>")) {
+    ASSERT_TRUE(event);
+    auto result = reader.consume(*event);
+    ASSERT_TRUE(result);
+    if (*result) EXPECT_EQ((**result).value, 42);
+  }
+  EXPECT_TRUE(reader.finish());
+}
+
+TEST(Streaming, DeepRecursiveValuesUseOverflowPositions) {
+  streaming_test::node root{"root", {}};
+  auto* child = &root;
+  for (int i = 0; i < 30; ++i) child = &child->children.emplace_back("level", std::vector<streaming_test::node>{});
+  const auto eager = eagerly(root);
+  auto view = chevron::to_xml(root);
+  std::string lazy;
+  for (auto chunk : view.chunks()) lazy += chunk;
+  EXPECT_EQ(lazy, eager);
+  chevron::parser parser;
+  chevron::reader<streaming_test::node> reader;
+  for (std::size_t i = 0; i < lazy.size(); ++i) {
+    parser.feed(std::string_view(lazy).substr(i, 1));
+    auto result = reader.next(parser);
+    ASSERT_TRUE(result) << i;
+    if (!*result) continue;
+    auto* node = &**result;
+    EXPECT_EQ(node->value, "root");
+    int depth = 0;
+    while (!node->children.empty()) { ++depth; node = &node->children[0]; }
+    EXPECT_EQ(depth, 30);
+  }
+}
+
+TEST(Write, BorrowsLargeTextAndAttributeRuns) {
+  chat::message value{std::string(100000, 'a'), "b", {}, std::string(100000, 'x') + "&" + std::string(100000, 'y'), {}};
+  auto view = chevron::to_xml(value);
+  bool borrowed_attribute = false, borrowed_text = false, separate_escape = false;
+  std::string written;
+  for (auto chunk : view.chunks()) {
+    borrowed_attribute |= chunk.data() == value.to.data() && chunk.size() == value.to.size();
+    borrowed_text |= chunk.data() == value.body->data() && chunk.size() == 100000;
+    separate_escape |= chunk == "&amp;";
+    written += chunk;
+  }
+  EXPECT_TRUE(borrowed_attribute);
+  EXPECT_TRUE(borrowed_text);
+  EXPECT_TRUE(separate_escape);
+  EXPECT_EQ(written, eagerly(value));
+}
+
+TEST(Write, MovingInlineOwnedAndBorrowedViewsRestartsTraversal) {
+  auto original = chevron::to_xml(chat::presence{"short", 17});
+  auto chunks = original.chunks();
+  auto iterator = chunks.begin();
+  ++iterator;
+  auto moved = std::move(original);
+  EXPECT_EQ(moved | std::ranges::to<std::string>(), eagerly(chat::presence{"short", 17}));
+  auto assigned = chevron::to_xml(chat::presence{"other", 2});
+  assigned = std::move(moved);
+  EXPECT_EQ(assigned | std::ranges::to<std::string>(), eagerly(chat::presence{"short", 17}));
+  chat::presence source{"borrowed", 8};
+  auto borrowed = chevron::to_xml(source);
+  auto moved_borrowed = std::move(borrowed);
+  source.priority = 9;
+  EXPECT_EQ(moved_borrowed | std::ranges::to<std::string>(), eagerly(source));
+}
+
+namespace streaming_test {
+struct wide {
+  int a0, a1, a2, a3, a4, a5, a6, a7, a8, a9;
+  int a10, a11, a12, a13, a14, a15, a16, a17, a18, a19;
+  int a20, a21, a22, a23, a24, a25, a26, a27, a28, a29;
+  int a30, a31, a32, a33, a34, a35, a36, a37, a38, a39;
+  int a40, a41, a42, a43, a44, a45, a46, a47, a48, a49;
+  int a50, a51, a52, a53, a54, a55, a56, a57, a58, a59;
+  int a60, a61, a62, a63, a64;
+};
+constexpr auto xml_schema(chevron::type<wide>) { return chevron::schema<wide>().name("", "wide"); }
+}
+
+TEST(Read, RequiredMembersBeyondTheInlineSeenBits) {
+  std::string text = "<wide>";
+  for (int i = 0; i < 64; ++i) text += "<a" + std::to_string(i) + ">1</a" + std::to_string(i) + ">";
+  const auto missing = chevron::read<streaming_test::wide>(events(text + "</wide>"));
+  ASSERT_FALSE(missing);
+  EXPECT_EQ(missing.error().code, chevron::read_code::missing_child);
+  EXPECT_EQ(missing.error().where, "a64");
+  const auto complete = chevron::read<streaming_test::wide>(events(text + "<a64>65</a64></wide>"));
+  ASSERT_TRUE(complete);
+  EXPECT_EQ(complete->a64, 65);
+}

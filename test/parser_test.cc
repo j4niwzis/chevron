@@ -357,3 +357,71 @@ TEST(Html, TheSameByteByByte) {
                                       std::string_view("<mx-reply><blockquote>q</blockquote></mx-reply>a<!--c-->b")})
     EXPECT_EQ(joined(read_html(html, 1)), joined(read_html(html)));
 }
+
+TEST(Parser, TokenLimitsDoNotDependOnFeedBoundaries) {
+  const chevron::limits limits{.token = 16};
+  const std::vector<std::string> documents{
+      "<a x='" + std::string(40, 'x') + "'/>",
+      "<" + std::string(40, 'x') + "/>",
+      "<a>" + std::string(40, 'x') + "</a>",
+      "<a><![CDATA[" + std::string(40, 'x') + "]]></a>",
+      "<?xml version='1.0'?><a/>",
+      "<a></a" + std::string(40, ' ') + ">"};
+  for (const auto& document : documents) {
+    const auto whole = read(document, std::string_view::npos, true, limits);
+    ASSERT_TRUE(whole.back().starts_with("!"));
+    for (std::size_t piece : {1u, 2u, 7u, 17u, 32u})
+      EXPECT_EQ(read(document, piece, true, limits), whole) << document << " chunk=" << piece;
+    EXPECT_EQ(whole.back(), error(error_code::too_large,
+        document.starts_with("<a>") ? 3 : 0));
+  }
+  EXPECT_EQ(read("<a>" + std::string(16, 'x') + "</a>", 1, true, limits).back(), "E{}a");
+  std::string many = "<a>";
+  for (int i = 0; i != 100; ++i) many += "<b/>";
+  many += "</a>";
+  EXPECT_EQ(read(many, std::string_view::npos, true, limits).back(), "E{}a");
+
+  chevron::parser incomplete(limits);
+  incomplete.feed(std::string_view("<a x='xxxxxxxxxxxxxxxxxxxx"));
+  incomplete.finish();
+  const auto refused = incomplete.next();
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().code, error_code::too_large);
+}
+
+TEST(Html, TokenLimitsAlsoApplyToCompleteAndRecoveredTokens) {
+  const std::vector<std::string> documents{
+      "<a x='" + std::string(40, 'x') + "'>",
+      "<!--" + std::string(40, 'x') + "-->",
+      "<?" + std::string(40, 'x') + ">",
+      "</a" + std::string(40, ' ') + ">",
+      std::string(40, 'x'), "<a x='" + std::string(40, 'x')};
+  for (const auto& document : documents) {
+    for (std::size_t chunk : {1u, 5u, 128u}) {
+      chevron::parser parser({.token = 16}, chevron::dialect::html{});
+      std::optional<chevron::error> error;
+      for (std::size_t at = 0; at < document.size() && !error; at += chunk) {
+        parser.feed(std::string_view(document).substr(at, chunk));
+        auto next = parser.next();
+        if (!next) error = next.error();
+      }
+      if (!error) {
+        parser.finish();
+        auto next = parser.next();
+        if (!next) error = next.error();
+      }
+      ASSERT_TRUE(error) << document << " chunk=" << chunk;
+      EXPECT_EQ(error->code, error_code::too_large);
+      EXPECT_EQ(error->offset, 0u);
+    }
+  }
+}
+
+TEST(Parser, LargeInputCompactionPreservesEventsAndOffsets) {
+  std::string document = "<a>";
+  for (int i = 0; i != 4000; ++i) document += "<b>text</b>";
+  document += "</wrong>";
+  const auto whole = read(document);
+  EXPECT_EQ(whole, read(document, 97));
+  EXPECT_EQ(whole.back(), error(error_code::mismatched_end_tag, document.size() - 8));
+}

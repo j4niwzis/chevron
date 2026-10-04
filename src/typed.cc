@@ -327,15 +327,6 @@ constexpr std::optional<T> value_of(std::string_view text) {
   }
 }
 
-// Put one occurrence into a member: assigned, emplaced or appended.
-template <class Member, class Value>
-constexpr void store(Member& member, Value&& value) {
-  if constexpr (is_vector<Member>::value)
-    member.push_back(std::forward<Value>(value));
-  else
-    member = std::forward<Value>(value);
-}
-
 template <class Source>
 constexpr std::expected<event, read_error> next_event(Source& source) {
   auto next = source.next();
@@ -369,45 +360,6 @@ constexpr std::expected<any, read_error> capture(Source& source, const start_ele
     }
   }
 }
-
-template <class Source>
-constexpr std::expected<void, read_error> skip(Source& source) {
-  for (std::size_t depth = 1; depth > 0;) {
-    auto next = next_event(source);
-    if (!next)
-      return std::unexpected(next.error());
-    if (splice::holds_alternative<start_element>(*next))
-      ++depth;
-    else if (splice::holds_alternative<end_element>(*next))
-      --depth;
-  }
-  return {};
-}
-
-// The text of an element that holds only text, up to its end.
-template <class Source>
-constexpr std::expected<std::string, read_error> text_content(Source& source, std::string_view where) {
-  std::string out;
-  for (;;) {
-    auto next = next_event(source);
-    if (!next)
-      return std::unexpected(next.error());
-    if (const auto* piece = splice::get_if<text>(&*next))
-      out += piece->content;
-    else if (splice::holds_alternative<end_element>(*next))
-      return out;
-    else
-      return std::unexpected(read_error{read_code::bad_value, std::string(where), std::nullopt});
-  }
-}
-
-template <class T, class Source>
-constexpr std::expected<T, read_error> read_element(Source& source, const start_element& start);
-
-// The alternative of a tagged that names the element, read; nothing where
-// none does.
-template <class Tagged, class Source>
-constexpr std::optional<std::expected<Tagged, read_error>> read_tagged(Source& source, const start_element& start);
 
 template <class T>
 struct described_member {
@@ -474,194 +426,6 @@ struct described_member {
   }
 };
 
-template <class T, class Source>
-constexpr std::expected<T, read_error> read_element(Source& source, const start_element& start) {
-  using info = described_member<T>;
-  constexpr std::size_t count = info::schema.count;
-  T out{};
-  std::optional<read_error> failure;
-  const std::string parent_uri(start.name.uri);
-
-  // Attributes first: the start element's views last only until the next event.
-  [&]<std::size_t... I>(std::index_sequence<I...>) {
-    (info::template check<I>(), ...);
-    const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
-      if constexpr (info::template kind_of<K>() == members::kind::attribute) {
-        if (failure)
-          return;
-        const std::string_view local = info::template local_of<K>();
-        const std::string_view uri = info::schema.bound[K].uri.value_or(std::string_view());
-        auto& member = boost::pfr::get<K>(out);
-        using held = std::remove_cvref_t<decltype(member)>;
-        for (const attribute& found : start.attributes)
-          if (found.name.local == local && found.name.uri == uri) {
-            const auto value = value_of<element_of<held>>(found.value);
-            if (!value)
-              failure = read_error{read_code::bad_value, std::string(local), std::nullopt};
-            else
-              member = *value;
-            return;
-          }
-        if constexpr (!is_optional<held>::value)
-          failure = read_error{read_code::missing_attribute, std::string(local), std::nullopt};
-      }
-    };
-    (one(std::integral_constant<std::size_t, I>{}), ...);
-    const auto keep = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
-      if constexpr (info::template kind_of<K>() == members::kind::unknown_attributes) {
-        auto& kept = boost::pfr::get<K>(out);
-        for (const attribute& found : start.attributes) {
-          // Claimed by a member that names it?
-          const bool claimed = (false || ... || [&] {
-            if constexpr (info::template kind_of<I>() == members::kind::attribute) {
-              const std::string_view uri = info::schema.bound[I].uri.value_or(std::string_view());
-              return found.name.local == info::template local_of<I>() && found.name.uri == uri;
-            } else {
-              return false;
-            }
-          }());
-          if (!claimed)
-            kept.push_back({{std::string(found.name.uri), std::string(found.name.local)},
-                            std::string(found.value)});
-        }
-      }
-    };
-    (keep(std::integral_constant<std::size_t, I>{}), ...);
-  }(std::make_index_sequence<count>{});
-  if (failure)
-    return std::unexpected(*failure);
-
-  std::array<bool, count> seen{};
-  for (;;) {
-    auto next = next_event(source);
-    if (!next)
-      return std::unexpected(next.error());
-    if (splice::holds_alternative<end_element>(*next))
-      break;
-    if (const auto* piece = splice::get_if<text>(&*next)) {
-      [&]<std::size_t... I>(std::index_sequence<I...>) {
-        const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
-          if constexpr (info::template kind_of<K>() == members::kind::text) {
-            auto& member = boost::pfr::get<K>(out);
-            using held = std::remove_cvref_t<decltype(member)>;
-            if constexpr (std::same_as<element_of<held>, std::string>) {
-              if constexpr (is_optional<held>::value) {
-                if (!member)
-                  member.emplace();
-                *member += piece->content;
-              } else {
-                member += piece->content;
-              }
-            } else {
-              const auto value = value_of<element_of<held>>(piece->content);
-              if (!value)
-                failure = read_error{read_code::bad_value, "text", std::nullopt};
-              else
-                member = *value;
-            }
-          }
-        };
-        (one(std::integral_constant<std::size_t, I>{}), ...);
-      }(std::make_index_sequence<count>{});
-      if (failure)
-        return std::unexpected(*failure);
-      continue;
-    }
-    const start_element child = splice::get<start_element>(*next);
-    const std::string child_uri(child.name.uri);
-    const std::string child_local(child.name.local);
-    bool claimed = false;
-    [&]<std::size_t... I>(std::index_sequence<I...>) {
-      const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
-        constexpr members::kind what = info::template kind_of<K>();
-        if constexpr (what == members::kind::child || what == members::kind::child_text) {
-          if (claimed || failure)
-            return;
-          constexpr auto name = info::template child_name<K>();
-          const std::string_view uri = name.second.value_or(std::string_view(parent_uri));
-          if (child_local != name.first || child_uri != uri)
-            return;
-          claimed = true;
-          seen[K] = true;
-          auto& member = boost::pfr::get<K>(out);
-          using held = std::remove_cvref_t<decltype(member)>;
-          using one_value = element_of<held>;
-          if constexpr (what == members::kind::child) {
-            auto value = read_element<one_value>(source, child);
-            if (!value)
-              failure = value.error();
-            else
-              store(member, std::move(*value));
-          } else {
-            auto content = text_content(source, child_local);
-            if (!content) {
-              failure = content.error();
-            } else {
-              auto value = value_of<one_value>(*content);
-              if (!value)
-                failure = read_error{read_code::bad_value, child_local, std::nullopt};
-              else
-                store(member, std::move(*value));
-            }
-          }
-        } else if constexpr (what == members::kind::tagged) {
-          if (claimed || failure)
-            return;
-          auto& member = boost::pfr::get<K>(out);
-          using held = std::remove_cvref_t<decltype(member)>;
-          auto value = read_tagged<element_of<held>>(source, child);
-          if (!value)
-            return;  // no alternative names it
-          claimed = true;
-          seen[K] = true;
-          if (!*value)
-            failure = value->error();
-          else
-            store(member, std::move(**value));
-        }
-      };
-      (one(std::integral_constant<std::size_t, I>{}), ...);
-      if (claimed || failure)
-        return;
-      const auto unknown = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
-        if constexpr (info::template kind_of<K>() == members::kind::unknown_children) {
-          if (claimed || failure)
-            return;
-          claimed = true;
-          auto kept = capture(source, child);
-          if (!kept)
-            failure = kept.error();
-          else
-            boost::pfr::get<K>(out).push_back(std::move(*kept));
-        }
-      };
-      (unknown(std::integral_constant<std::size_t, I>{}), ...);
-    }(std::make_index_sequence<count>{});
-    if (failure)
-      return std::unexpected(*failure);
-    if (!claimed)
-      if (auto skipped = skip(source); !skipped)
-        return std::unexpected(skipped.error());
-  }
-
-  // What must be there and was not.
-  [&]<std::size_t... I>(std::index_sequence<I...>) {
-    const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
-      constexpr members::kind what = info::template kind_of<K>();
-      using held = typename info::template member_type<K>;
-      if constexpr ((what == members::kind::child || what == members::kind::child_text ||
-                     what == members::kind::tagged) &&
-                    !is_optional<held>::value && !is_vector<held>::value)
-        if (!seen[K] && !failure)
-          failure = read_error{read_code::missing_child, std::string(info::template child_name<K>().first), std::nullopt};
-    };
-    (one(std::integral_constant<std::size_t, I>{}), ...);
-  }(std::make_index_sequence<count>{});
-  if (failure)
-    return std::unexpected(*failure);
-  return out;
-}
-
 template <class T>
 constexpr bool is_named(const start_element& start) {
   constexpr auto schema = xml_schema(type<T>{});
@@ -676,34 +440,348 @@ constexpr bool is_named(const start_element& start) {
   return true;
 }
 
-template <class Tagged, class Source>
-constexpr std::optional<std::expected<Tagged, read_error>> read_tagged(Source& source, const start_element& start) {
-  std::optional<std::expected<Tagged, read_error>> out;
+}  // namespace chevron::detail::reading
+
+// Reusable positions, with shallow nesting held inline. Positions contain
+// progress, not erased writers/readers or pointers into the value being built.
+namespace chevron::detail {
+template <class Position>
+class positions {
+ public:
+  constexpr Position& operator[](std::size_t level) {
+    return level < local_.size() ? local_[level] : more_[level - local_.size()];
+  }
+  constexpr void ensure(std::size_t level) {
+    if (level >= local_.size() && more_.size() <= level - local_.size())
+      more_.resize(level - local_.size() + 1);
+    while (size_ <= level) (*this)[size_++].reset();
+  }
+  constexpr void trim(std::size_t size) { size_ = size; }
+ private:
+  std::array<Position, 8> local_{};
+  std::vector<Position> more_;
+  std::size_t size_ = 0;
+};
+}  // namespace chevron::detail
+
+namespace chevron::detail::reading {
+
+struct read_position {
+  std::string uri;
+  std::string text;
+  std::uint64_t seen = 0;
+  std::vector<std::uint64_t> more_seen;
+  std::size_t member = std::variant_npos;
+  std::size_t index = 0;
+  std::size_t skipping = 0;
+  bool text_seen = false;
+
+  constexpr void reset() {
+    uri.clear();
+    text.clear();
+    seen = 0;
+    std::ranges::fill(more_seen, 0);
+    member = std::variant_npos;
+    index = skipping = 0;
+    text_seen = false;
+  }
+  constexpr void mark(std::size_t at) {
+    if (at < 64) seen |= std::uint64_t{1} << at;
+    else {
+      if (more_seen.size() < at / 64) more_seen.resize(at / 64);
+      more_seen[at / 64 - 1] |= std::uint64_t{1} << (at % 64);
+    }
+  }
+  constexpr bool has(std::size_t at) const {
+    return at < 64 ? (seen & (std::uint64_t{1} << at)) != 0
+                  : at / 64 <= more_seen.size() &&
+                    (more_seen[at / 64 - 1] & (std::uint64_t{1} << (at % 64))) != 0;
+  }
+};
+
+// Call f with the selected concrete type. Unknown elements reach any only
+// where the tagged explicitly includes it.
+template <class Tagged, class F>
+constexpr bool select(const start_element& start, F&& f) {
+  bool matched = false;
   [&]<class... A>(type<tagged<A...>>) {
-    const auto try_one = [&]<class One>(type<One>) {
-      if (out)
-        return;
-      if constexpr (std::same_as<One, any>) {
-        auto kept = capture(source, start);
-        if (kept)
-          out.emplace(Tagged(One(std::move(*kept))));  // One is any here: dependent, so not checked for a tagged without any
-        else
-          out.emplace(std::unexpected(kept.error()));
-      } else {
-        static_assert(described<One> && xml_schema(type<One>{}).named,
-                      "chevron: an alternative of a tagged needs a schema that names its element");
-        if (!is_named<One>(start))
-          return;
-        auto value = read_element<One>(source, start);
-        if (value)
-          out.emplace(Tagged(std::move(*value)));
-        else
-          out.emplace(std::unexpected(value.error()));
+    ([&] {
+      if (matched) return;
+      if constexpr (!std::same_as<A, any>) {
+        static_assert(described<A> && xml_schema(type<A>{}).named,
+                      "chevron: a tagged alternative needs a named schema");
+        if (!is_named<A>(start)) return;
       }
-    };
-    (try_one(type<A>{}), ...);
+      matched = true;
+      f(type<A>{});
+    }(), ...);
   }(type<Tagged>{});
-  return out;
+  return matched;
+}
+
+class incremental {
+  using result = std::expected<bool, read_error>;
+ public:
+  constexpr void reset() { at_.trim(0); }
+
+  template <class T>
+  constexpr std::expected<void, read_error> start(T& out, const start_element& start,
+                                                 std::size_t level = 0) {
+    at_.ensure(level);
+    if constexpr (std::same_as<T, any>) {
+      out.uri = start.name.uri;
+      out.local = start.name.local;
+      for (const auto& attribute : start.attributes)
+        out.attributes.push_back({{std::string(attribute.name.uri), std::string(attribute.name.local)},
+                                  std::string(attribute.value)});
+      return {};
+    } else {
+      using info = described_member<T>;
+      at_[level].uri = start.name.uri;
+      std::optional<read_error> failure;
+      [&]<std::size_t... I>(std::index_sequence<I...>) {
+        (info::template check<I>(), ...);
+        ([&] {
+          if constexpr (info::template kind_of<I>() == members::kind::attribute) {
+            if (failure) return;
+            const auto local = info::template local_of<I>();
+            const auto uri = info::schema.bound[I].uri.value_or(std::string_view());
+            auto& member = boost::pfr::get<I>(out);
+            using held = std::remove_cvref_t<decltype(member)>;
+            for (const attribute& found : start.attributes) {
+              if (found.name.local != local || found.name.uri != uri) continue;
+              auto value = value_of<element_of<held>>(found.value);
+              if (!value) failure = read_error{read_code::bad_value, std::string(local), {}};
+              else member = std::move(*value);
+              return;
+            }
+            if constexpr (!is_optional<held>::value)
+              failure = read_error{read_code::missing_attribute, std::string(local), {}};
+          }
+        }(), ...);
+        ([&] {
+          if constexpr (info::template kind_of<I>() == members::kind::unknown_attributes) {
+            for (const attribute& found : start.attributes) {
+              const bool claimed = [&]<std::size_t... K>(std::index_sequence<K...>) {
+                return (false || ... || [&] {
+                  if constexpr (info::template kind_of<K>() == members::kind::attribute)
+                    return found.name.local == info::template local_of<K>() &&
+                           found.name.uri == info::schema.bound[K].uri.value_or(std::string_view());
+                  else return false;
+                }());
+              }(std::make_index_sequence<info::schema.count>{});
+              if (!claimed) boost::pfr::get<I>(out).push_back(
+                  {{std::string(found.name.uri), std::string(found.name.local)}, std::string(found.value)});
+            }
+          }
+        }(), ...);
+      }(std::make_index_sequence<info::schema.count>{});
+      if (failure) return std::unexpected(std::move(*failure));
+      return {};
+    }
+  }
+
+  template <class T>
+  constexpr result consume(T& out, const event& event, std::size_t level = 0) {
+    if constexpr (std::same_as<T, any>) return capture(out, event, level);
+    else {
+      using info = described_member<T>;
+      constexpr auto count = info::schema.count;
+      if (at_[level].skipping) {
+        if (splice::holds_alternative<start_element>(event)) ++at_[level].skipping;
+        else if (splice::holds_alternative<end_element>(event)) --at_[level].skipping;
+        return false;
+      }
+      if (at_[level].member != std::variant_npos) {
+        result done = false;
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+          (void)((at_[level].member == I ? (done = child<T, I>(out, event, level), true) : false) || ...);
+        }(std::make_index_sequence<count>{});
+        if (!done) return done;
+        if (*done) {
+          at_[level].member = std::variant_npos;
+          at_.trim(level + 1);
+        }
+        return false;
+      }
+      if (const auto* piece = splice::get_if<text>(&event)) {
+        bool needs_text = false;
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+          ([&] {
+            if constexpr (info::template kind_of<I>() == members::kind::text) {
+              auto& member = boost::pfr::get<I>(out);
+              using held = std::remove_cvref_t<decltype(member)>;
+              if constexpr (std::same_as<element_of<held>, std::string>) {
+                if constexpr (is_optional<held>::value) {
+                  if (!member) member.emplace();
+                  *member += piece->content;
+                } else member += piece->content;
+              } else needs_text = true;
+            }
+          }(), ...);
+        }(std::make_index_sequence<count>{});
+        if (needs_text) {
+          at_[level].text += piece->content;
+          at_[level].text_seen = true;
+        }
+        return false;
+      }
+      if (splice::holds_alternative<end_element>(event)) {
+        std::optional<read_error> failure;
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+          ([&] {
+            if (failure) return;
+            constexpr auto kind = info::template kind_of<I>();
+            using held = typename info::template member_type<I>;
+            if constexpr (kind == members::kind::text &&
+                          !std::same_as<element_of<held>, std::string>) {
+              if (at_[level].text_seen) {
+                auto value = value_of<element_of<held>>(at_[level].text);
+                if (!value) failure = read_error{read_code::bad_value, "text", {}};
+                else boost::pfr::get<I>(out) = std::move(*value);
+              }
+            }
+            if constexpr ((kind == members::kind::child || kind == members::kind::child_text ||
+                           kind == members::kind::tagged) &&
+                          !is_optional<held>::value && !is_vector<held>::value) {
+              if (!at_[level].has(I)) failure = read_error{
+                  read_code::missing_child, std::string(info::template child_name<I>().first), {}};
+            }
+          }(), ...);
+        }(std::make_index_sequence<count>{});
+        if (failure) return std::unexpected(std::move(*failure));
+        return true;
+      }
+      const auto& incoming = splice::get<start_element>(event);
+      bool claimed = false;
+      std::expected<void, read_error> began;
+      [&]<std::size_t... I>(std::index_sequence<I...>) {
+        ([&] {
+          if (claimed) return;
+          constexpr auto kind = info::template kind_of<I>();
+          auto& member = boost::pfr::get<I>(out);
+          using held = std::remove_cvref_t<decltype(member)>;
+          if constexpr (kind == members::kind::child || kind == members::kind::child_text) {
+            constexpr auto name = info::template child_name<I>();
+            if (incoming.name.local != name.first ||
+                incoming.name.uri != name.second.value_or(at_[level].uri)) return;
+            claimed = true;
+            auto& value = begin<I>(member, level);
+            if constexpr (kind == members::kind::child) began = start(value, incoming, level + 1);
+          } else if constexpr (kind == members::kind::tagged) {
+            claimed = select<element_of<held>>(incoming, [&]<class A>(type<A>) {
+              auto& value = begin<I>(member, level);
+              auto& alternative = value.data().template emplace<A>();
+              began = start(alternative, incoming, level + 1);
+            });
+          }
+        }(), ...);
+        if (claimed) return;
+        ([&] {
+          if constexpr (info::template kind_of<I>() == members::kind::unknown_children) {
+            if (claimed) return;
+            claimed = true;
+            auto& value = begin<I>(boost::pfr::get<I>(out), level);
+            began = start(value, incoming, level + 1);
+          }
+        }(), ...);
+      }(std::make_index_sequence<count>{});
+      if (!began) return std::unexpected(std::move(began.error()));
+      if (!claimed) at_[level].skipping = 1;
+      return false;
+    }
+  }
+
+ private:
+  template <std::size_t I, class Member>
+  constexpr auto& begin(Member& member, std::size_t level) {
+    at_[level].member = I;
+    at_[level].mark(I);
+    at_.ensure(level + 1);
+    if constexpr (is_vector<Member>::value) {
+      at_[level].index = member.size();
+      return member.emplace_back();
+    } else if constexpr (is_optional<Member>::value) return member.emplace();
+    else { member = {}; return member; }
+  }
+
+  template <class T, std::size_t I>
+  constexpr result child(T& out, const event& event, std::size_t level) {
+    using info = described_member<T>;
+    constexpr auto kind = info::template kind_of<I>();
+    if constexpr (kind == members::kind::attribute || kind == members::kind::unknown_attributes ||
+                  kind == members::kind::text) return false;
+    else {
+      auto& member = boost::pfr::get<I>(out);
+      auto& value = [&]() -> auto& {
+        using held = std::remove_cvref_t<decltype(member)>;
+        if constexpr (is_vector<held>::value) return member[at_[level].index];
+        else if constexpr (is_optional<held>::value) return *member;
+        else return member;
+      }();
+      if constexpr (kind == members::kind::child_text) {
+        if (const auto* text = splice::get_if<chevron::text>(&event)) {
+          if constexpr (std::same_as<std::remove_cvref_t<decltype(value)>, std::string>) value += text->content;
+          else at_[level + 1].text += text->content;
+          return false;
+        }
+        const auto name = info::template child_name<I>().first;
+        if (splice::holds_alternative<start_element>(event))
+          return std::unexpected(read_error{read_code::bad_value, std::string(name), {}});
+        if constexpr (!std::same_as<std::remove_cvref_t<decltype(value)>, std::string>) {
+          auto parsed = value_of<std::remove_cvref_t<decltype(value)>>(at_[level + 1].text);
+          if (!parsed) return std::unexpected(read_error{read_code::bad_value, std::string(name), {}});
+          value = std::move(*parsed);
+        }
+        return true;
+      } else if constexpr (kind == members::kind::tagged) {
+        result done = false;
+        value.with([&](auto& alternative) { done = consume(alternative, event, level + 1); });
+        return done;
+      } else return consume(value, event, level + 1);
+    }
+  }
+
+  constexpr result capture(any& out, const event& event, std::size_t level) {
+    if (at_[level].member != std::variant_npos) {
+      auto done = capture(splice::get<any>(out.children[at_[level].member].value), event, level + 1);
+      if (done && *done) {
+        at_[level].member = std::variant_npos;
+        at_.trim(level + 1);
+      }
+      return done ? result(false) : done;
+    }
+    if (const auto* text = splice::get_if<chevron::text>(&event)) {
+      out.children.push_back({std::string(text->content)});
+      return false;
+    }
+    if (const auto* child = splice::get_if<start_element>(&event)) {
+      at_[level].member = out.children.size();
+      out.children.push_back({any{}});
+      auto begun = start(splice::get<any>(out.children.back().value), *child, level + 1);
+      return begun ? result(false) : std::unexpected(std::move(begun.error()));
+    }
+    return true;
+  }
+
+  positions<read_position> at_;
+};
+
+// The synchronous API uses the same state machine, completing an element
+// before returning. reader<T> below keeps this state between calls instead.
+template <class T, class Source>
+constexpr std::expected<T, read_error> read_element(Source& source, const start_element& first) {
+  T out{};
+  incremental state;
+  auto started = state.start(out, first);
+  if (!started) return std::unexpected(std::move(started.error()));
+  for (;;) {
+    auto next = next_event(source);
+    if (!next) return std::unexpected(std::move(next.error()));
+    auto done = state.consume(out, *next);
+    if (!done) return std::unexpected(std::move(done.error()));
+    if (*done) return out;
+  }
 }
 
 // A range of events -- std::expected<event, error> each, as text | events
@@ -735,6 +813,95 @@ class range_source {
 }  // namespace chevron::detail::reading
 
 export namespace chevron {
+
+// A persistent typed read. next(source) returns no value when more events
+// are needed; feeding the source and calling again continues the same value.
+// consume(event) is the equivalent for a caller that already pulls events.
+template <described... Types>
+  requires(sizeof...(Types) > 0)
+class reader {
+  template <class... T> struct result_type { using type = splice::variant<T...>; };
+  template <class T> struct result_type<T> { using type = T; };
+ public:
+  using value_type = typename result_type<Types...>::type;
+  using result = std::expected<std::optional<value_type>, read_error>;
+
+  constexpr result consume(const event& event) {
+    if (failure_) return std::unexpected(*failure_);
+    if (!value_) {
+      if (const auto* text = splice::get_if<chevron::text>(&event);
+          text && std::ranges::all_of(text->content, [](char c) {
+            return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+          })) return std::nullopt;
+      const auto* start = splice::get_if<start_element>(&event);
+      if (!start) return fail({read_code::unexpected_element, {}, {}});
+      bool matched = false;
+      std::expected<void, read_error> begun;
+      ([&] {
+        if (matched || !detail::reading::is_named<Types>(*start)) return;
+        matched = true;
+        state_.reset();
+        if constexpr (sizeof...(Types) == 1) {
+          value_.emplace();
+          begun = state_.start(*value_, *start);
+        } else {
+          value_.emplace(std::in_place_type<Types>);
+          begun = state_.start(splice::get<Types>(*value_), *start);
+        }
+      }(), ...);
+      if (!matched) return fail({read_code::unexpected_element, std::string(start->name.local), {}});
+      if (!begun) return fail(std::move(begun.error()));
+      return std::nullopt;
+    }
+    auto done = [&] {
+      if constexpr (sizeof...(Types) == 1) return state_.consume(*value_, event);
+      else return splice::visit([&](auto& held) { return state_.consume(held, event); }, *value_);
+    }();
+    if (!done) return fail(std::move(done.error()));
+    if (!*done) return std::nullopt;
+    auto completed = std::move(value_);
+    value_.reset();
+    state_.reset();
+    return completed;
+  }
+
+  template <event_source Source>
+  constexpr result next(Source& source) {
+    if (failure_) return std::unexpected(*failure_);
+    for (;;) {
+      auto event = source.next();
+      if (!event) return fail({read_code::parse, {}, event.error()});
+      if (!*event) return std::nullopt;
+      auto made = consume(**event);
+      if (!made || *made) return made;
+    }
+  }
+
+  // For event sources without an explicit end/error event. A partial value
+  // at the end is an error; ending between values is valid.
+  constexpr std::expected<void, read_error> finish() {
+    if (failure_) return std::unexpected(*failure_);
+    if (value_) {
+      failure_ = read_error{read_code::incomplete, {}, {}};
+      return std::unexpected(*failure_);
+    }
+    return {};
+  }
+  constexpr void reset() {
+    value_.reset();
+    failure_.reset();
+    state_.reset();
+  }
+
+ private:
+  constexpr result fail(read_error error) {
+    failure_ = std::move(error);
+    return std::unexpected(*failure_);
+  }
+  std::optional<value_type> value_;
+  detail::reading::incremental state_;
+  std::optional<read_error> failure_;
+};
 
 // The next event that is not white space between elements.
 template <class Source>
@@ -830,62 +997,165 @@ constexpr void put_value(Out& out, std::string_view text) {
   out = std::ranges::copy(escaped_value(text), std::move(out)).out;
 }
 
+// A borrowed string, or a scalar formatted into inline storage. Copying this
+// object never leaves a view pointing into the object it was copied from.
+struct scalar_text {
+  std::string_view borrowed;
+  std::array<char, 64> digits{};
+  std::size_t size = 0;
+  bool number = false;
+  constexpr operator std::string_view() const {
+    return number ? std::string_view(digits.data(), size) : borrowed;
+  }
+  constexpr bool empty() const { return std::string_view(*this).empty(); }
+};
+
 template <class T>
-constexpr std::string text_of(const T& value) {
-  if constexpr (std::same_as<T, std::string>) {
-    return value;
-  } else if constexpr (std::same_as<T, bool>) {
-    return value ? "true" : "false";
-  } else if constexpr (reading::is_choice<T>::value) {
-    return splice::visit([](const auto& one) { return std::string(one.xml_value); }, value);
-  } else {
-    std::array<char, 64> digits{};
-    const auto [end, problem] = std::to_chars(digits.data(), digits.data() + digits.size(), value);
-    return std::string(digits.data(), end);
+constexpr scalar_text text_of(const T& value) {
+  scalar_text out;
+  if constexpr (std::same_as<T, std::string>) out.borrowed = value;
+  else if constexpr (std::same_as<T, bool>) out.borrowed = value ? "true" : "false";
+  else if constexpr (reading::is_choice<T>::value)
+    out.borrowed = splice::visit([](const auto& one) { return std::string_view(one.xml_value); }, value);
+  else {
+    const auto [end, problem] = std::to_chars(out.digits.data(), out.digits.data() + out.digits.size(), value);
+    out.number = true;
+    out.size = end - out.digits.data();
+  }
+  return out;
+}
+
+template <class T, class F>
+constexpr void attributes_of(const T& value, F&& emit) {
+  using info = described_member<T>;
+  [&]<std::size_t... I>(std::index_sequence<I...>) {
+    (info::template check<I>(), ...);
+    ([&] {
+      constexpr auto kind = info::template kind_of<I>();
+      const auto& member = boost::pfr::get<I>(value);
+      if constexpr (kind == members::kind::attribute) {
+        const auto uri = info::schema.bound[I].uri.value_or(std::string_view());
+        if constexpr (is_optional<std::remove_cvref_t<decltype(member)>>::value) {
+          if (member) emit(uri, info::template local_of<I>(), text_of(*member));
+        } else emit(uri, info::template local_of<I>(), text_of(member));
+      } else if constexpr (kind == members::kind::unknown_attributes) {
+        for (const auto& [name, kept] : member) emit(name.first, name.second, text_of(kept));
+      }
+    }(), ...);
+  }(std::make_index_sequence<info::schema.count>{});
+  if constexpr (info::schema.has_when) {
+    if (!info::schema.when_absent)
+      emit(std::string_view(), info::schema.when_local, scalar_text{info::schema.when_value});
   }
 }
 
-// The start of an element: its name, a default namespace declaration where
-// it is not the one in effect, and its attributes, each in a namespace with a
-// prefix of its own -- xml for the XML namespace, declared otherwise.
+constexpr void attributes_of(const any& value, auto&& emit) {
+  for (const auto& [name, kept] : value.attributes) emit(name.first, name.second, text_of(kept));
+}
+
+// Select just one attribute for the lazy writer. Kept attributes are indexed
+// directly, and other values are formatted only when selected.
+template <class T, class F>
+constexpr bool attribute_at(const T& value, std::size_t index, F&& emit) {
+  using info = described_member<T>;
+  const bool found = [&]<std::size_t... I>(std::index_sequence<I...>) {
+    return (false || ... || [&] {
+      constexpr auto kind = info::template kind_of<I>();
+      const auto& member = boost::pfr::get<I>(value);
+      if constexpr (kind == members::kind::attribute) {
+        const auto uri = info::schema.bound[I].uri.value_or(std::string_view());
+        if constexpr (is_optional<std::remove_cvref_t<decltype(member)>>::value) {
+          if (!member) return false;
+          if (index) { --index; return false; }
+          emit(uri, info::template local_of<I>(), text_of(*member));
+        } else {
+          if (index) { --index; return false; }
+          emit(uri, info::template local_of<I>(), text_of(member));
+        }
+        return true;
+      } else if constexpr (kind == members::kind::unknown_attributes) {
+        if (index >= member.size()) { index -= member.size(); return false; }
+        const auto& [name, kept] = member[index];
+        emit(name.first, name.second, text_of(kept));
+        return true;
+      } else return false;
+    }());
+  }(std::make_index_sequence<info::schema.count>{});
+  if (found) return true;
+  if constexpr (info::schema.has_when) {
+    if (!info::schema.when_absent && index == 0) {
+      emit(std::string_view(), info::schema.when_local, scalar_text{info::schema.when_value});
+      return true;
+    }
+  }
+  return false;
+}
+constexpr bool attribute_at(const any& value, std::size_t index, auto&& emit) {
+  if (index >= value.attributes.size()) return false;
+  const auto& [name, kept] = value.attributes[index];
+  emit(name.first, name.second, text_of(kept));
+  return true;
+}
+
+template <class T>
+constexpr bool has_content(const T& value) {
+  using info = described_member<T>;
+  return [&]<std::size_t... I>(std::index_sequence<I...>) {
+    (info::template check<I>(), ...);
+    return (false || ... || [&] {
+      constexpr auto kind = info::template kind_of<I>();
+      const auto& member = boost::pfr::get<I>(value);
+      using held = std::remove_cvref_t<decltype(member)>;
+      if constexpr (kind == members::kind::attribute || kind == members::kind::unknown_attributes) return false;
+      else if constexpr (is_optional<held>::value) return member.has_value();
+      else if constexpr (is_vector<held>::value) return !member.empty();
+      else if constexpr (kind == members::kind::text) return !text_of(member).empty();
+      else return true;
+    }());
+  }(std::make_index_sequence<info::schema.count>{});
+}
+
+inline constexpr std::string_view xml_namespace = "http://www.w3.org/XML/1998/namespace";
+
 template <class Out>
-constexpr void open(Out& out, std::string_view uri, std::string_view local, std::string_view in_effect,
-                    const std::vector<std::tuple<std::string_view, std::string_view, std::string>>& attributes) {
-  *out++ = '<';
+constexpr void open(Out& out, std::string_view uri, std::string_view local, std::string_view in_effect) {
+  put(out, "<");
   put(out, local);
   if (uri != in_effect) {
     put(out, " xmlns=\"");
     put_value(out, uri);
-    *out++ = '"';
-  }
-  std::size_t prefixes = 0;
-  for (const auto& [attribute_uri, attribute_local, value] : attributes) {
-    *out++ = ' ';
-    if (attribute_uri == std::string_view("http://www.w3.org/XML/1998/namespace")) {
-      put(out, "xml:");
-    } else if (!attribute_uri.empty()) {
-      const std::string prefix = "a" + std::to_string(prefixes++);
-      put(out, "xmlns:");
-      put(out, prefix);
-      put(out, "=\"");
-      put_value(out, attribute_uri);
-      put(out, "\" ");
-      put(out, prefix);
-      *out++ = ':';
-    }
-    put(out, attribute_local);
-    put(out, "=\"");
-    put_value(out, value);
-    *out++ = '"';
+    put(out, "\"");
   }
 }
 
 template <class Out>
+constexpr void write_attribute(Out& out, std::string_view uri, std::string_view local,
+                               std::string_view value, std::size_t& prefixes) {
+  put(out, " ");
+  if (uri == xml_namespace) put(out, "xml:");
+  else if (!uri.empty()) {
+    const auto prefix = text_of(prefixes++);
+    put(out, "xmlns:a");
+    put(out, prefix);
+    put(out, "=\"");
+    put_value(out, uri);
+    put(out, "\" a");
+    put(out, prefix);
+    put(out, ":");
+  }
+  put(out, local);
+  put(out, "=\"");
+  put_value(out, value);
+  put(out, "\"");
+}
+
+template <class Out>
 constexpr void write_any(Out& out, const any& element, std::string_view in_effect) {
-  std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
-  for (const auto& [name, value] : element.attributes)
-    attributes.emplace_back(name.first, name.second, value);
-  open(out, element.uri, element.local, in_effect, attributes);
+  open(out, element.uri, element.local, in_effect);
+  std::size_t prefixes = 0;
+  attributes_of(element, [&](std::string_view uri, std::string_view local, auto text) {
+    write_attribute(out, uri, local, text, prefixes);
+  });
   if (element.children.empty()) {
     put(out, "/>");
     return;
@@ -913,7 +1183,7 @@ constexpr void write_child(Out& out, const One& value, std::string_view uri, std
   if constexpr (What == members::kind::child) {
     write_element(out, value, uri, local, in_effect);
   } else {
-    open(out, uri, local, in_effect, {});
+    open(out, uri, local, in_effect);
     *out++ = '>';
     put_text(out, text_of(value));
     put(out, "</");
@@ -927,44 +1197,12 @@ constexpr void write_element(Out& out, const T& value, std::string_view uri, std
                              std::string_view in_effect) {
   using info = described_member<T>;
   constexpr std::size_t count = info::schema.count;
-  std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
-  bool has_content = false;
-  [&]<std::size_t... I>(std::index_sequence<I...>) {
-    (info::template check<I>(), ...);
-    const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
-      constexpr members::kind what = info::template kind_of<K>();
-      const auto& member = boost::pfr::get<K>(value);
-      using held = std::remove_cvref_t<decltype(member)>;
-      if constexpr (what == members::kind::attribute) {
-        const std::string_view attribute_uri = info::schema.bound[K].uri.value_or(std::string_view());
-        if constexpr (is_optional<held>::value) {
-          if (member)
-            attributes.emplace_back(attribute_uri, info::template local_of<K>(), text_of(*member));
-        } else {
-          attributes.emplace_back(attribute_uri, info::template local_of<K>(), text_of(member));
-        }
-      } else if constexpr (what == members::kind::unknown_attributes) {
-        for (const auto& [name, kept] : member)
-          attributes.emplace_back(name.first, name.second, kept);
-      } else if constexpr (is_optional<held>::value) {
-        has_content = has_content || member.has_value();
-      } else if constexpr (is_vector<held>::value) {
-        has_content = has_content || !member.empty();
-      } else if constexpr (what == members::kind::text) {
-        has_content = has_content || !text_of(member).empty();
-      } else {
-        has_content = true;
-      }
-    };
-    (one(std::integral_constant<std::size_t, I>{}), ...);
-  }(std::make_index_sequence<count>{});
-  if constexpr (info::schema.has_when) {
-    if (!info::schema.when_absent)
-      attributes.emplace_back(std::string_view(), info::schema.when_local, std::string(info::schema.when_value));
-  }
-
-  open(out, uri, local, in_effect, attributes);
-  if (!has_content) {
+  open(out, uri, local, in_effect);
+  std::size_t prefixes = 0;
+  attributes_of(value, [&](std::string_view attribute_uri, std::string_view attribute_local, auto text) {
+    write_attribute(out, attribute_uri, attribute_local, text, prefixes);
+  });
+  if (!has_content(value)) {
     put(out, "/>");
     return;
   }
@@ -1081,228 +1319,252 @@ using reading::element_of;
 using reading::is_optional;
 using reading::is_vector;
 using reading::described_member;
-using writing::put;
-using writing::put_text;
 using writing::text_of;
 
-constexpr std::string start_tag(std::string_view uri, std::string_view local, std::string_view in_effect,
-                      const std::vector<std::tuple<std::string_view, std::string_view, std::string>>& attributes,
-                      bool empty) {
-  std::string out;
-  auto at = std::back_inserter(out);
-  writing::open(at, uri, local, in_effect, attributes);
-  put(at, empty ? "/>" : ">");
-  return out;
-}
+enum class escaping { none, text, attribute };
+struct piece {
+  std::string_view text;
+  escaping escape = escaping::none;
+};
 
-// Where the writing is: a level for each element open -- its phase (the
-// start tag next, its content, done), the member being written and which
-// occurrence of it (for a kept element, which child). For each piece the
-// writer walks down from the root along it, choosing each level's writer by
-// its type at compile time and the depth at run time: no writer is erased
-// into a common type, and a type that holds itself is written by the same
-// function, deeper.
+// Concrete traversal, with an inline position per open element. Large text
+// is borrowed and escaped a run at a time; neither tags nor attributes are
+// collected into a temporary container.
 struct position {
   int phase = 0;
+  int header = 0;
+  int attribute = 0;
   std::size_t member = 0;
   std::size_t index = 0;
+  std::size_t attributes = 0;
+  std::size_t prefixes = 0;
+  bool content = false;
+  std::string_view attribute_uri, attribute_local;
+  writing::scalar_text value, prefix;
+  constexpr void reset() { *this = {}; }
 };
 
 class writer {
  public:
-  // The next piece of `value`, the element at `level`; nothing where it is
-  // written. A piece stays valid until the writer is asked again.
   template <class T>
-  constexpr std::optional<std::string_view> element(const T& value, std::string_view uri, std::string_view local,
-                                                    std::string_view in_effect, std::size_t level) {
-    using info = described_member<T>;
-    constexpr std::size_t count = info::schema.count;
-    if (at_.size() <= level)
-      at_.push_back({});
-    if (at_[level].phase == 0) {
-      std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
-      bool content = false;
-      [&]<std::size_t... I>(std::index_sequence<I...>) {
-        (info::template check<I>(), ...);
-        const auto one = [&]<std::size_t K>(std::integral_constant<std::size_t, K>) {
-          constexpr members::kind what = info::template kind_of<K>();
-          const auto& held = boost::pfr::get<K>(value);
-          using type = std::remove_cvref_t<decltype(held)>;
-          if constexpr (what == members::kind::attribute) {
-            const std::string_view in = info::schema.bound[K].uri.value_or(std::string_view());
-            if constexpr (is_optional<type>::value) {
-              if (held)
-                attributes.emplace_back(in, info::template local_of<K>(), text_of(*held));
-            } else {
-              attributes.emplace_back(in, info::template local_of<K>(), text_of(held));
-            }
-          } else if constexpr (what == members::kind::unknown_attributes) {
-            for (const auto& [name, kept] : held)
-              attributes.emplace_back(name.first, name.second, kept);
-          } else if constexpr (is_optional<type>::value) {
-            content = content || held.has_value();
-          } else if constexpr (is_vector<type>::value) {
-            content = content || !held.empty();
-          } else if constexpr (what == members::kind::text) {
-            content = content || !text_of(held).empty();
-          } else {
-            content = true;
-          }
+  constexpr std::optional<std::string_view> next(const T& value, std::string_view uri, std::string_view local) {
+    for (;;) {
+      if (!pending_.empty()) {
+        const auto reference_for = [&](char c) {
+          return escape_ == escaping::text ? text_reference(c) : value_reference(c);
         };
-        (one(std::integral_constant<std::size_t, I>{}), ...);
-      }(std::make_index_sequence<count>{});
-      if constexpr (info::schema.has_when) {
-        if (!info::schema.when_absent)
-          attributes.emplace_back(std::string_view(), info::schema.when_local, std::string(info::schema.when_value));
-      }
-      buffer_ = start_tag(uri, local, in_effect, attributes, !content);
-      at_[level].phase = content ? 1 : 2;
-      return std::string_view(buffer_);
-    }
-    if (at_[level].phase == 1) {
-      while (at_[level].member < count) {
-        std::optional<std::string_view> out;
-        [&]<std::size_t... I>(std::index_sequence<I...>) {
-          ((at_[level].member == I ? (out = member<T, I>(value, uri, level), true) : false) || ...);
-        }(std::make_index_sequence<count>{});
-        if (out)
-          return out;
-      }
-      buffer_ = "</" + std::string(local) + ">";
-      at_[level].phase = 2;
-      return std::string_view(buffer_);
-    }
-    return std::nullopt;
-  }
-
-  // The same for an element kept as it came.
-  constexpr std::optional<std::string_view> kept(const any& element, std::string_view in_effect, std::size_t level) {
-    if (at_.size() <= level)
-      at_.push_back({});
-    if (at_[level].phase == 0) {
-      std::vector<std::tuple<std::string_view, std::string_view, std::string>> attributes;
-      for (const auto& [name, value] : element.attributes)
-        attributes.emplace_back(name.first, name.second, value);
-      buffer_ = start_tag(element.uri, element.local, in_effect, attributes, element.children.empty());
-      at_[level].phase = element.children.empty() ? 2 : 1;
-      return std::string_view(buffer_);
-    }
-    if (at_[level].phase == 1) {
-      while (at_[level].member < element.children.size()) {
-        const any_node& one = element.children[at_[level].member];
-        if (const auto* text = splice::get_if<std::string>(&one.value)) {
-          ++at_[level].member;
-          buffer_.clear();
-          auto out = std::back_inserter(buffer_);
-          put_text(out, *text);
-          return std::string_view(buffer_);
+        escape_buffer_ = reference_for(pending_.front());
+        if (escape_buffer_.size != 1) {
+          pending_.remove_prefix(1);
+          return std::string_view(escape_buffer_.chars.data(), escape_buffer_.size);
         }
-        if (auto got = kept(splice::get<any>(one.value), element.uri, level + 1))
-          return got;
-        at_.resize(level + 1);
-        ++at_[level].member;
+        std::size_t end = 1;
+        while (end < pending_.size() && reference_for(pending_[end]).size == 1) ++end;
+        const auto run = pending_.substr(0, end);
+        pending_.remove_prefix(end);
+        return run;
       }
-      buffer_ = "</" + element.local + ">";
-      at_[level].phase = 2;
-      return std::string_view(buffer_);
+      auto out = element(value, uri, local, {}, 0);
+      if (!out) return std::nullopt;
+      if (out->text.empty()) continue;
+      if (out->escape == escaping::none) return out->text;
+      pending_ = out->text;
+      escape_ = out->escape;
     }
-    return std::nullopt;
   }
 
  private:
-  // The next piece member K of the element at `level` gives; nothing where it
-  // has no more, and the element goes on to the next member.
-  template <class T, std::size_t K>
-  constexpr std::optional<std::string_view> member(const T& value, std::string_view uri, std::size_t level) {
+  // Emit an attribute in small fragments. Value formatting is inline and
+  // remains alive while next() drains any pending escape runs.
+  constexpr std::optional<piece> attribute(position& at) {
+    const bool xml = at.attribute_uri == writing::xml_namespace;
+    for (;;) switch (at.attribute++) {
+      case 0: return piece{" "};
+      case 1:
+        if (xml) { at.attribute = 9; return piece{"xml:"}; }
+        if (at.attribute_uri.empty()) { at.attribute = 9; continue; }
+        at.prefix = text_of(at.prefixes++);
+        return piece{"xmlns:a"};
+      case 2: return piece{at.prefix};
+      case 3: return piece{"=\""};
+      case 4: return piece{at.attribute_uri, escaping::attribute};
+      case 5: return piece{"\" a"};
+      case 6: return piece{at.prefix};
+      case 7: return piece{":"};
+      case 8: continue;
+      case 9: return piece{at.attribute_local};
+      case 10: return piece{"=\""};
+      case 11: return piece{at.value, escaping::attribute};
+      case 12: return piece{"\""};
+      default: return std::nullopt;
+    }
+  }
+
+  template <class Attributes>
+  constexpr std::optional<piece> header(std::string_view uri, std::string_view local,
+                                        std::string_view in_effect, std::size_t level, Attributes&& attributes) {
+    auto& at = at_[level];
+    for (;;) switch (at.header) {
+      case 0: ++at.header; return piece{"<"};
+      case 1: ++at.header; return piece{local};
+      case 2:
+        if (uri == in_effect) { at.header = 5; continue; }
+        ++at.header; return piece{" xmlns=\""};
+      case 3: ++at.header; return piece{uri, escaping::attribute};
+      case 4: ++at.header; return piece{"\""};
+      case 5: {
+        const bool found = attributes(at.attributes, [&](std::string_view uri, std::string_view local,
+                                                         writing::scalar_text value) {
+          at.attribute_uri = uri;
+          at.attribute_local = local;
+          at.value = value;
+        });
+        if (!found) { at.header = 7; continue; }
+        ++at.attributes;
+        at.attribute = 0;
+        at.header = 6;
+        continue;
+      }
+      case 6:
+        if (auto out = attribute(at)) return out;
+        at.header = 5;
+        continue;
+      default:
+        at.phase = at.content ? 1 : 5;
+        return piece{at.content ? ">" : "/>"};
+    }
+  }
+
+  constexpr std::optional<piece> close(std::string_view local, std::size_t level) {
+    switch (at_[level].phase++) {
+      case 2: return piece{"</"};
+      case 3: return piece{local};
+      case 4: return piece{">"};
+      default: at_[level].phase = 5; return std::nullopt;
+    }
+  }
+
+  template <class T>
+  constexpr std::optional<piece> element(const T& value, std::string_view uri, std::string_view local,
+                                         std::string_view in_effect, std::size_t level) {
     using info = described_member<T>;
-    constexpr members::kind what = info::template kind_of<K>();
+    at_.ensure(level);
+    if (at_[level].phase == 0) {
+      if (at_[level].header == 0) at_[level].content = writing::has_content(value);
+      return header(uri, local, in_effect, level, [&](std::size_t index, auto&& emit) { return writing::attribute_at(value, index, emit); });
+    }
+    if (at_[level].phase == 1) {
+      while (at_[level].member < info::schema.count) {
+        std::optional<piece> out;
+        [&]<std::size_t... I>(std::index_sequence<I...>) {
+          (void)((at_[level].member == I ? (out = member<T, I>(value, uri, level), true) : false) || ...);
+        }(std::make_index_sequence<info::schema.count>{});
+        if (out) return out;
+      }
+      at_[level].phase = 2;
+    }
+    return close(local, level);
+  }
+
+  constexpr std::optional<piece> kept(const any& value, std::string_view in_effect, std::size_t level) {
+    at_.ensure(level);
+    if (at_[level].phase == 0) {
+      at_[level].content = !value.children.empty();
+      return header(value.uri, value.local, in_effect, level,
+                    [&](std::size_t index, auto&& emit) { return writing::attribute_at(value, index, emit); });
+    }
+    if (at_[level].phase == 1) {
+      while (at_[level].member < value.children.size()) {
+        const auto& child = value.children[at_[level].member];
+        if (const auto* text = splice::get_if<std::string>(&child.value)) {
+          ++at_[level].member;
+          return piece{*text, escaping::text};
+        }
+        if (auto out = kept(splice::get<any>(child.value), value.uri, level + 1)) return out;
+        at_.trim(level + 1);
+        ++at_[level].member;
+      }
+      at_[level].phase = 2;
+    }
+    return close(value.local, level);
+  }
+
+  template <class T>
+  constexpr piece text(const T& value) {
+    scalar_ = text_of(value);
+    return {scalar_, escaping::text};
+  }
+
+  template <class T>
+  constexpr std::optional<piece> text_child(const T& value, std::string_view uri, std::string_view local,
+                                            std::string_view in_effect, std::size_t level) {
+    at_.ensure(level);
+    if (at_[level].phase == 0) {
+      at_[level].content = true;
+      return header(uri, local, in_effect, level, [](std::size_t, auto&&) { return false; });
+    }
+    if (at_[level].phase == 1) {
+      at_[level].phase = 2;
+      return text(value);
+    }
+    return close(local, level);
+  }
+
+  template <class T, std::size_t K>
+  constexpr std::optional<piece> member(const T& value, std::string_view uri, std::size_t level) {
+    using info = described_member<T>;
+    constexpr auto what = info::template kind_of<K>();
     const auto& held = boost::pfr::get<K>(value);
     using type = std::remove_cvref_t<decltype(held)>;
     using one_value = element_of<type>;
-    const auto move_on = [&] {
-      ++at_[level].member;
-      at_[level].index = 0;
-    };
+    const auto move_on = [&] { ++at_[level].member; at_[level].index = 0; };
     if constexpr (what == members::kind::attribute || what == members::kind::unknown_attributes) {
       move_on();
       return std::nullopt;
     } else if constexpr (what == members::kind::text) {
       move_on();
-      buffer_.clear();
-      auto out = std::back_inserter(buffer_);
       if constexpr (is_optional<type>::value) {
-        if (!held)
-          return std::nullopt;
-        put_text(out, text_of(*held));
-      } else {
-        put_text(out, text_of(held));
-      }
-      return std::string_view(buffer_);
-    } else if constexpr (what == members::kind::unknown_children) {
-      if (at_[level].index >= held.size()) {
-        move_on();
-        return std::nullopt;
-      }
-      if (auto got = kept(held[at_[level].index], uri, level + 1))
-        return got;
-      at_.resize(level + 1);
-      ++at_[level].index;
-      return std::nullopt;
+        if (!held) return std::nullopt;
+        return text(*held);
+      } else return text(held);
     } else {
-      // An occurrence of a child: the index-th of a vector, or the one there
-      // is of an optional or a plain member.
       const std::size_t index = at_[level].index;
       const one_value* occurrence = nullptr;
       if constexpr (is_vector<type>::value) {
-        if (index < held.size())
-          occurrence = &held[index];
+        if (index < held.size()) occurrence = &held[index];
       } else if constexpr (is_optional<type>::value) {
-        if (index == 0 && held)
-          occurrence = &*held;
+        if (index == 0 && held) occurrence = &*held;
+      } else if (index == 0) occurrence = &held;
+      if (!occurrence) { move_on(); return std::nullopt; }
+      std::optional<piece> out;
+      if constexpr (what == members::kind::unknown_children) out = kept(*occurrence, uri, level + 1);
+      else if constexpr (what == members::kind::tagged) {
+        occurrence->with([&]<class One>(const One& alternative) {
+          if constexpr (std::same_as<One, any>) out = kept(alternative, uri, level + 1);
+          else {
+            constexpr auto inner = xml_schema(chevron::type<One>{});
+            out = element(alternative, inner.uri, inner.local, uri, level + 1);
+          }
+        });
       } else {
-        if (index == 0)
-          occurrence = &held;
+        constexpr auto name = info::template child_name<K>();
+        const auto child_uri = name.second.value_or(uri);
+        if constexpr (what == members::kind::child_text)
+          out = text_child(*occurrence, child_uri, name.first, uri, level + 1);
+        else out = element(*occurrence, child_uri, name.first, uri, level + 1);
       }
-      if (!occurrence) {
-        move_on();
-        return std::nullopt;
-      }
-      constexpr auto name = info::template child_name<K>();
-      const std::string_view child_uri = name.second.value_or(uri);
-      if constexpr (what == members::kind::child_text) {
-        ++at_[level].index;
-        buffer_ = start_tag(child_uri, name.first, uri, {}, false);
-        auto out = std::back_inserter(buffer_);
-        put_text(out, text_of(*occurrence));
-        put(out, "</");
-        put(out, name.first);
-        put(out, ">");
-        return std::string_view(buffer_);
-      } else {
-        std::optional<std::string_view> got;
-        if constexpr (what == members::kind::tagged) {
-          occurrence->with([&]<class One>(const One& alternative) {
-            if constexpr (std::same_as<One, any>) {
-              got = kept(alternative, uri, level + 1);
-            } else {
-              constexpr auto inner = xml_schema(chevron::type<One>{});
-              got = element(alternative, inner.uri, inner.local, uri, level + 1);
-            }
-          });
-        } else {
-          got = element(*occurrence, child_uri, name.first, uri, level + 1);
-        }
-        if (got)
-          return got;
-        at_.resize(level + 1);
-        ++at_[level].index;
-        return std::nullopt;
-      }
+      if (out) return out;
+      at_.trim(level + 1);
+      ++at_[level].index;
+      return std::nullopt;
     }
   }
 
-  std::vector<position> at_;
-  std::string buffer_;
+  positions<position> at_;
+  writing::scalar_text scalar_;
+  std::string_view pending_;
+  escaping escape_ = escaping::none;
+  reference escape_buffer_;
 };
 
 }  // namespace chevron::detail::lazy
@@ -1381,9 +1643,22 @@ class xml_view : public std::ranges::view_interface<xml_view<T>> {
   };
 
   constexpr explicit xml_view(const T& value) : value_(&value) {}
-  constexpr explicit xml_view(T&& value) : owned_(std::make_unique<T>(std::move(value))), value_(owned_.get()) {}
-  xml_view(xml_view&&) = default;
-  xml_view& operator=(xml_view&&) = default;
+  constexpr explicit xml_view(T&& value) : owned_(std::in_place, std::move(value)), value_(&*owned_) {}
+  // Moving invalidates iterators and restarts traversal. Rebind inline-owned
+  // values; no piece may keep a pointer into the old view's scalar storage.
+  constexpr xml_view(xml_view&& other)
+      : owned_(std::move(other.owned_)), value_(owned_ ? &*owned_ : other.value_) {}
+  constexpr xml_view& operator=(xml_view&& other) {
+    if (this == &other) return *this;
+    if (other.owned_) owned_.emplace(std::move(*other.owned_));
+    else owned_.reset();
+    value_ = owned_ ? &*owned_ : other.value_;
+    writer_ = {};
+    piece_ = {};
+    at_ = 0;
+    done_ = true;
+    return *this;
+  }
 
   constexpr iterator begin() {
     start();
@@ -1405,7 +1680,7 @@ class xml_view : public std::ranges::view_interface<xml_view<T>> {
     constexpr auto schema = xml_schema(type<T>{});
     at_ = 0;
     for (;;) {
-      const auto next = writer_.element(*value_, schema.uri, schema.local, std::string_view(), 0);
+      const auto next = writer_.next(*value_, schema.uri, schema.local);
       if (!next) {
         done_ = true;
         return;
@@ -1417,7 +1692,7 @@ class xml_view : public std::ranges::view_interface<xml_view<T>> {
     }
   }
 
-  std::unique_ptr<T> owned_;
+  std::optional<T> owned_;
   const T* value_ = nullptr;
   detail::lazy::writer writer_;
   std::string_view piece_;

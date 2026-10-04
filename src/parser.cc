@@ -463,7 +463,7 @@ class parser {
   // What was fed and not read yet. Where a new document follows in the same
   // bytes -- an XMPP stream restarted after authentication -- it is fed to
   // the parser that reads that one.
-  constexpr std::string_view unread() const noexcept { return std::string_view(buffer_).substr(at_); }
+  constexpr std::string_view unread() const noexcept { return std::string_view(buffer_).substr(head_ + at_); }
 
   // The next event; nothing where the input fed so far holds no complete one
   // -- or, after finish(), where the document is over; or the error. After
@@ -517,10 +517,15 @@ class parser {
       --pending_ends_;
       return close_top();
     }
-    buffer_.erase(0, at_);
+    head_ += at_;
     base_ += at_;
     at_ = 0;
-    const std::string_view in = buffer_;
+    // Compact occasionally, instead of moving the unread tail at every event.
+    if (head_ == buffer_.size() || (head_ >= 4096 && head_ >= buffer_.size() / 2)) {
+      buffer_.erase(0, head_);
+      head_ = 0;
+    }
+    const std::string_view in = std::string_view(buffer_).substr(head_);
     if (in.empty()) {
       if (!finished_)
         return std::nullopt;
@@ -560,6 +565,7 @@ class parser {
       const std::size_t end = comment ? in.find("-->", 4) : in.find('>');
       if (end == std::string_view::npos)
         return finished_ ? as_text(in) : wait(in);
+      if (end + (comment ? 3 : 1) > limits_.token) return fail(error_code::too_large, 0);
       at_ = end + (comment ? 3 : 1);
       return step();
     }
@@ -571,12 +577,14 @@ class parser {
         const std::size_t end = in.find('>');
         if (end == std::string_view::npos)
           return finished_ ? as_text(in) : wait(in);
+        if (end + 1 > limits_.token) return fail(error_code::too_large, 0);
         at_ = end + 1;
         return step();
       }
       return html_end_tag(in);
     }
     if (!letter(in[1])) {
+      if (limits_.token == 0) return fail(error_code::too_large, 0);
       at_ = 1;
       return text{keep("<")};
     }
@@ -585,8 +593,9 @@ class parser {
 
   // What is left, at the end of the input, as text: a tag never closed.
   constexpr result as_text(std::string_view in) {
+    if (in.size() > limits_.token) return fail(error_code::too_large, 0);
     at_ = in.size();
-    return text{keep(std::string(in))};
+    return text{keep(in)};
   }
 
   // An HTML name at in[at]: letters, digits and - _ . : -- in lower case.
@@ -668,6 +677,7 @@ class parser {
     const std::size_t end = tag_end(in);
     if (end == std::string_view::npos)
       return finished_ ? as_text(in) : wait(in);
+    if (end > limits_.token) return fail(error_code::too_large, 0);
     const bool self_closed = end >= 3 && in[end - 2] == '/';
     const std::size_t body_end = self_closed ? end - 2 : end - 1;
     const std::size_t name_to = html_name_end(in, 1, body_end);
@@ -742,6 +752,7 @@ class parser {
     const std::size_t end = in.find('>');
     if (end == std::string_view::npos)
       return finished_ ? as_text(in) : wait(in);
+    if (end + 1 > limits_.token) return fail(error_code::too_large, 0);
     const std::string name = lower(in.substr(2, html_name_end(in, 2, end) - 2));
     at_ = end + 1;
     const auto found = std::ranges::find(open_.rbegin(), open_.rend(), name, &open_element::raw);
@@ -754,10 +765,10 @@ class parser {
   // Not enough of the input yet: wait for more, unless there will be none or
   // a token is already past the limit.
   constexpr result wait(std::string_view in) const {
-    if (finished_)
-      return fail(error_code::unexpected_end, in.size());
     if (in.size() > limits_.token)
       return fail(error_code::too_large, 0);
+    if (finished_)
+      return fail(error_code::unexpected_end, in.size());
     return std::nullopt;
   }
 
@@ -772,6 +783,7 @@ class parser {
     const std::size_t end = in.find("?>");
     if (end == std::string_view::npos)
       return wait(in);
+    if (end + 2 > limits_.token) return fail(error_code::too_large, 0);
     if (!declaration(in.substr(5, end - 5)))
       return fail(error_code::bad_declaration, 0);
     at_ = end + 2;
@@ -844,6 +856,7 @@ class parser {
       const std::size_t end = in.find("]]>", cdata.size());
       if (end == std::string_view::npos)
         return wait(in);
+      if (end + 3 > limits_.token) return fail(error_code::too_large, 0);
       std::string content;
       if (const auto bad = checked_characters(in, cdata.size(), end, content))
         return std::unexpected(*bad);
@@ -953,6 +966,7 @@ class parser {
     }
     if (end == std::string_view::npos)
       return wait(in);
+    if (end > limits_.token) return fail(error_code::too_large, 0);
     std::string content;
     content.reserve(end);  // what it will be, give or take the references
     for (std::size_t at = 0; at < end;) {
@@ -993,6 +1007,7 @@ class parser {
         return wait(in);
       end = in.size();
     }
+    if (end > limits_.token) return fail(error_code::too_large, 0);
     std::string content;
     content.reserve(end);
     for (std::size_t at = 0; at < end;) {
@@ -1056,6 +1071,7 @@ class parser {
     const std::size_t end = tag_end(in);
     if (end == std::string_view::npos)
       return wait(in);
+    if (end > limits_.token) return fail(error_code::too_large, 0);
     const bool empty = in[end - 2] == '/';
     const std::size_t body_end = empty ? end - 2 : end - 1;
     const std::size_t name_to = name_end(in, 1, body_end);
@@ -1143,14 +1159,14 @@ class parser {
       const std::size_t colon = name.find(':');
       if (colon == std::string_view::npos) {
         if (!element)
-          return qname{{}, keep(std::string(name))};
+          return qname{{}, keep(name)};
         const auto uri = uri_of({});
-        return qname{keep(std::string(*uri)), keep(std::string(name))};
+        return qname{keep(*uri), keep(name)};
       }
       const auto uri = uri_of(name.substr(0, colon));
       if (!uri)
         return std::nullopt;
-      return qname{keep(std::string(*uri)), keep(std::string(name.substr(colon + 1)))};
+      return qname{keep(*uri), keep(name.substr(colon + 1))};
     };
     const auto element = resolve(raw, true);
     if (!element) {
@@ -1184,6 +1200,7 @@ class parser {
     const std::size_t end = in.find('>');
     if (end == std::string_view::npos)
       return wait(in);
+    if (end + 1 > limits_.token) return fail(error_code::too_large, 0);
     const std::size_t name_to = name_end(in, 2, end);
     if (name_to == 0)
       return fail(error_code::bad_name, 2);
@@ -1207,8 +1224,8 @@ class parser {
     const std::size_t colon = top.raw.find(':');
     const std::string_view prefix =
         colon == std::string::npos ? std::string_view() : std::string_view(top.raw).substr(0, colon);
-    const qname name{keep(std::string(*uri_of(prefix))),
-                     keep(colon == std::string::npos ? top.raw : top.raw.substr(colon + 1))};
+    const qname name{keep(*uri_of(prefix)),
+                     keep(std::string_view(top.raw).substr(colon == std::string::npos ? 0 : colon + 1))};
     bindings_.resize(top.bindings);
     open_.pop_back();
     if (open_.empty())
@@ -1218,8 +1235,9 @@ class parser {
 
   limits limits_{};
   std::string buffer_;
-  std::size_t at_ = 0;     // what of buffer_ has been read
-  std::size_t base_ = 0;   // where buffer_ starts in the input
+  std::size_t head_ = 0;   // beginning of the current token in buffer_
+  std::size_t at_ = 0;     // bytes consumed from the current token
+  std::size_t base_ = 0;   // where the current token starts in the input
   bool finished_ = false;
   bool seen_root_ = false;
   bool root_ended_ = false;

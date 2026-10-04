@@ -17,8 +17,8 @@ Namespaces that RFC 6120, section 11, allows, read from bytes as they arrive.
   }
   ```
 - **Or HTML, as a message carries it.** `chevron::parser(limits, chevron::dialect::html{})`
-  reads a fragment of HTML -- Matrix's `org.matrix.custom.html` -- as a browser
-  reads one, into the same events: names in lower case and in no namespace,
+  reads a fragment of HTML -- Matrix's `org.matrix.custom.html` --
+  with tolerant recovery, into the same events: names in lower case and in no namespace,
   void elements (`<br>`, `<img ...>`) ended as they start, unquoted and bare
   attributes, HTML's named references and numeric ones, a `<` or `&` that starts
   nothing as text, end tags that close down to their element or are passed
@@ -42,7 +42,9 @@ Namespaces that RFC 6120, section 11, allows, read from bytes as they arrive.
   predefined are errors. Character references are resolved and checked, line
   ends made LF, attribute values normalized, CDATA sections read as text.
 - **Limits** on depth, on the size of a token and on the attributes of an
-  element, against input meant to exhaust.
+  element, against input meant to exhaust. Token limits count source bytes
+  (including markup delimiters) and apply equally to complete and split tokens;
+  a large feed containing many small tokens is allowed.
 
 What an event refers to -- names, values, text -- stays valid until the next
 call.
@@ -76,6 +78,34 @@ auto m = chevron::read<chat::message>(text | chevron::events);
 auto s = chevron::read_one_of<chat::message, chat::presence>(parser);
 ```
 
+For a parser fed by a nonblocking socket, retain a reader between feeds:
+
+```cpp
+chevron::parser parser;
+chevron::reader<chat::message> reader;
+
+// On each received chunk:
+parser.feed(bytes);
+for (;;) {
+  auto next = reader.next(parser);
+  if (!next) { handle_error(next.error()); break; }
+  if (!*next) break;  // need more input; partial value stays in reader
+  handle_message(std::move(**next));
+}
+```
+
+`reader<A, B, …>` returns a `splice::variant<A, B, …>`; `reader<T>` returns
+`T`. Both return `std::expected<std::optional<value_type>, read_error>`.
+`consume(event)` accepts events already pulled by the caller. The reader
+builds members directly, retaining only the partial value and traversal
+positions. At EOF call `parser.finish()` and drain it; `reader.finish()`
+checks for an unfinished value when the event source has no EOF signal.
+Errors persist until `reader.reset()`, which discards partial state.
+For an open XML stream, consume its outer start event before asking the
+reader for its child stanzas, and handle the outer end event separately.
+The existing `read` and `read_one_of` remain synchronous: input exhaustion
+is `incomplete`, and retrying those functions does not resume a partial value.
+
 - Member names come from Boost.PFR; `.member<"to">(…)` names a member, and
   `.members(…)` gives one descriptor to every member in order.
 - Descriptors: `attribute()`, `child_text()`, `child()`, `text()`,
@@ -103,7 +133,13 @@ auto s = chevron::read_one_of<chat::message, chat::presence>(parser);
   `chevron::write(out, value)` to an output iterator of `char` -- namespaces
   declared where they change, values escaped, what was kept as
   `chevron::any` written back as it came, and what is written read back as
-  the same value.
+  the same value. Text and attribute runs are borrowed from the input; escapes
+  and numeric values use fixed inline buffers. Shallow traversal positions
+  and an rvalue's owned value are inline too; deeper nesting uses a growable
+  position vector. Chunks remain valid until the next iterator increment;
+  chunk boundaries are unspecified. An lvalue must outlive its view and stay
+  unchanged during iteration. Moving a view invalidates iterators and restarts
+  traversal.
 - Errors say what and where: a missing attribute or child, a value that is
   not one, an element other than the one asked for, input that ran out, or
   the parser's own error.
