@@ -65,7 +65,7 @@ std::vector<std::string> events(const std::vector<std::string_view>& pieces) {
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
   // The fuzzer's bytes as text, a byte at a time by value: no view of one
   // type as another.
-  const std::string text = std::span(data, size) | std::views::transform([](std::uint8_t b) { return std::bit_cast<char>(b); }) |
+  const std::string text = std::views::transform(std::span(data, size), [](std::uint8_t b) { return std::bit_cast<char>(b); }) |
                            std::ranges::to<std::string>();
   const std::string_view input(text);
   const auto whole = events({input});

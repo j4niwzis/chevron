@@ -233,7 +233,7 @@ TEST(Write, LazyIsTheSameAsEager) {
   EXPECT_EQ(kept, eagerly(chat::presence{"dnd", 7}));
 
   // Only as far as it is read: the first few characters, and no more made.
-  EXPECT_EQ(std::ranges::to<std::string>(chevron::to_xml(q) | std::views::take(6)), "<query");
+  EXPECT_EQ(std::ranges::to<std::string>(std::views::take(chevron::to_xml(q), 6)), "<query");
 }
 
 

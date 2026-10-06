@@ -24,7 +24,7 @@ TEST(Escape, PlainTextIsItself) {
 // Any range of characters: here, one made on the way, which hands out no
 // references into anything.
 TEST(Escape, LazyInput) {
-  const auto upper = "a<b"sv | std::views::transform([](char c) { return c == 'b' ? 'B' : c; });
+  const auto upper = std::views::transform("a<b"sv, [](char c) { return c == 'b' ? 'B' : c; });
   EXPECT_EQ(chevron::escaped(upper), "a&lt;B");
 }
 

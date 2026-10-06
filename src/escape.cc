@@ -70,13 +70,11 @@ concept characters = std::ranges::viewable_range<Chars> && std::ranges::input_ra
 // A text so, lazily.
 template <characters Chars>
 [[nodiscard]] constexpr auto escaped_text(Chars&& chars) {
-  return std::views::all(std::forward<Chars>(chars)) | std::views::transform([](char c) { return text_reference(c); }) |
-         std::views::join;
+  return std::views::join(std::views::transform(std::views::all(std::forward<Chars>(chars)), [](char c) { return text_reference(c); }));
 }
 template <characters Chars>
 [[nodiscard]] constexpr auto escaped_value(Chars&& chars) {
-  return std::views::all(std::forward<Chars>(chars)) | std::views::transform([](char c) { return value_reference(c); }) |
-         std::views::join;
+  return std::views::join(std::views::transform(std::views::all(std::forward<Chars>(chars)), [](char c) { return value_reference(c); }));
 }
 
 // The string a caller keeps, or puts together with others: safe in
