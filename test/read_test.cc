@@ -85,8 +85,8 @@ TEST(Read, AMessage) {
   ASSERT_EQ(x.attributes.size(), 1u);
   EXPECT_EQ(x.attributes[0].second, "1");
   ASSERT_EQ(x.children.size(), 2u);
-  EXPECT_EQ(splice::get<std::string>(x.children[0].value), "kept ");
-  EXPECT_EQ(splice::get<chevron::any>(x.children[1].value).local, "y");
+  EXPECT_EQ(spl::get<std::string>(x.children[0].value), "kept ");
+  EXPECT_EQ(spl::get<chevron::any>(x.children[1].value).local, "y");
 }
 
 TEST(Read, OptionalAndMissing) {
@@ -132,8 +132,8 @@ TEST(Read, OneOf) {
       events("<presence xmlns='urn:example:client'><show>away</show><priority>5</priority></presence>"));
   ASSERT_TRUE(p.has_value());
   ASSERT_EQ(p->index(), 1u);
-  EXPECT_EQ(splice::get<chat::presence>(*p).show, std::optional<std::string>("away"));
-  EXPECT_EQ(splice::get<chat::presence>(*p).priority, std::optional<int>(5));
+  EXPECT_EQ(spl::get<chat::presence>(*p).show, std::optional<std::string>("away"));
+  EXPECT_EQ(spl::get<chat::presence>(*p).priority, std::optional<int>(5));
 }
 
 TEST(Read, FromAParserFedAsBytesArrive) {
@@ -317,7 +317,7 @@ struct groupchat {
 };
 
 struct typed_note {
-  std::optional<splice::variant<normal, chat_type, groupchat>> type;
+  std::optional<spl::variant<normal, chat_type, groupchat>> type;
   std::optional<std::string> body;
 };
 
@@ -339,7 +339,7 @@ TEST(Read, ChoiceAttribute) {
       chevron::events);
   ASSERT_TRUE(got.has_value());
   ASSERT_TRUE(got->type);
-  EXPECT_TRUE(splice::holds_alternative<chat::groupchat>(*got->type));
+  EXPECT_TRUE(spl::holds_alternative<chat::groupchat>(*got->type));
   EXPECT_EQ(chevron::to_xml(*got) | std::ranges::to<std::string>(),
             R"(<note xmlns="urn:example:client" type="groupchat"><body>x</body></note>)");
   const auto none = chevron::read<chat::typed_note>(
@@ -535,7 +535,7 @@ TEST(Read, BytewiseTaggedAndCapturedChildren) {
     EXPECT_EQ(value.extensions[0].as<tagged_test::delay>().stamp, "now");
     const auto& kept = value.extensions[1].as<chevron::any>();
     ASSERT_EQ(kept.children.size(), 3u);
-    EXPECT_EQ(splice::get<chevron::any>(kept.children[1].value).local, "y");
+    EXPECT_EQ(spl::get<chevron::any>(kept.children[1].value).local, "y");
   }
 }
 
@@ -548,10 +548,10 @@ TEST(Read, ReusesReaderForStanzasInsideAnOpenStream) {
                                "<message to='a' from='b'><body>hi</body></message>"));
   auto first = reader.next(parser);
   ASSERT_TRUE(first && *first);
-  EXPECT_EQ(splice::get<chat::presence>(**first).priority, 12);
+  EXPECT_EQ(spl::get<chat::presence>(**first).priority, 12);
   auto second = reader.next(parser);
   ASSERT_TRUE(second && *second);
-  EXPECT_EQ(splice::get<chat::message>(**second).body, "hi");
+  EXPECT_EQ(spl::get<chat::message>(**second).body, "hi");
   EXPECT_FALSE(*reader.next(parser));
   EXPECT_TRUE(reader.finish());
 }

@@ -94,7 +94,7 @@ for (;;) {
 }
 ```
 
-`reader<A, B, …>` returns a `splice::variant<A, B, …>`; `reader<T>` returns
+`reader<A, B, …>` returns a `spl::variant<A, B, …>`; `reader<T>` returns
 `T`. Both return `std::expected<std::optional<value_type>, read_error>`.
 `consume(event)` accepts events already pulled by the caller. The reader
 builds members directly, retaining only the partial value and traversal

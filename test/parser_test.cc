@@ -17,15 +17,15 @@ std::string shown(const chevron::event& one) {
   const auto name = [](const chevron::qname& n) {
     return "{" + std::string(n.uri) + "}" + std::string(n.local);
   };
-  if (const auto* start = splice::get_if<chevron::start_element>(&one)) {
+  if (const auto* start = spl::get_if<chevron::start_element>(&one)) {
     std::string out = "S" + name(start->name) + "[";
     for (std::size_t k = 0; k < start->attributes.size(); ++k)
       out += (k ? "," : "") + name(start->attributes[k].name) + "=" + std::string(start->attributes[k].value);
     return out + "]";
   }
-  if (const auto* end = splice::get_if<chevron::end_element>(&one))
+  if (const auto* end = spl::get_if<chevron::end_element>(&one))
     return "E" + name(end->name);
-  return "T\"" + std::string(splice::get<chevron::text>(one).content) + "\"";
+  return "T\"" + std::string(spl::get<chevron::text>(one).content) + "\"";
 }
 
 std::string shown(const chevron::error& one) {
@@ -262,7 +262,7 @@ TEST(Parser, NothingReadAhead) {
   std::size_t ends = 0;
   for (auto&& one : std::ranges::ref_view(input) | chevron::events) {
     ASSERT_TRUE(one.has_value());
-    if (splice::holds_alternative<chevron::end_element>(*one) && ++ends == 1)
+    if (spl::holds_alternative<chevron::end_element>(*one) && ++ends == 1)
       break;
   }
   EXPECT_EQ(ends, 1u);
@@ -300,7 +300,7 @@ TEST(Parser, LongTextChecked) {
     std::string text;
     for (auto&& one : std::string_view(document) | chevron::events) {
       if (!one) return std::optional<std::string>();
-      if (const auto* piece = splice::get_if<chevron::text>(&*one)) text += piece->content;
+      if (const auto* piece = spl::get_if<chevron::text>(&*one)) text += piece->content;
     }
     return std::optional<std::string>(text);
   };

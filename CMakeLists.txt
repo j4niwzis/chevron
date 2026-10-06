@@ -34,9 +34,9 @@ set(SPLICE_CONSTEXPR_STEPS ${CHEVRON_CONSTEXPR_STEPS} CACHE STRING
 # prefix -- is as good as one fetched, and found first where there is one.
 cme_declare_port(NAME splice PROVIDES splice
   GITHUB_REPOSITORY j4niwzis/splice
-  GIT_TAG f2c25443061ba5353720eccd0a9438793c2ea053
+  GIT_TAG eb07788f6751dad1636aec9fd6bb134fe03a953f
   LICENSE GPL-3.0-only
-  TARGETS splice::splice)
+  TARGETS spl::splice)
 cme_options(splice "SPLICE_TESTS OFF")
 cme_find_package(splice REQUIRED)
 
@@ -50,8 +50,8 @@ add_library(chevron)
 target_sources(chevron PUBLIC FILE_SET CXX_MODULES BASE_DIRS src
   FILES src/parser.cc src/events.cc src/escape.cc src/typed.cc src/chevron.cc)
 target_compile_features(chevron PUBLIC cxx_std_26)
-# By the names an installed copy has too: splice::splice.
-target_link_libraries(chevron PUBLIC Boost::pfr splice::splice)
+# By the names an installed copy has too: spl::splice.
+target_link_libraries(chevron PUBLIC Boost::pfr spl::splice)
 # A usage requirement of the library, as alef has. Besides giving constant
 # evaluation room, it makes the modules' settings differ from those of the
 # std target, so that CMake builds them against a std synthesized for them

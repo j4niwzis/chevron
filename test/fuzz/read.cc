@@ -29,7 +29,7 @@ constexpr auto xml_schema(chevron::type<item>) {
 
 struct doc {
   std::optional<std::string> id;
-  std::optional<splice::variant<kind_a, kind_b>> type;
+  std::optional<spl::variant<kind_a, kind_b>> type;
   chevron::kept_attributes rest;
   std::optional<std::string> body;
   std::optional<int> n;

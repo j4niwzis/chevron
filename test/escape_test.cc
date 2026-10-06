@@ -44,7 +44,7 @@ TEST(Escape, SafeInXmlCharacterDataToo) {
     auto next = parser.next();
     ASSERT_TRUE(next.has_value());
     if (!*next) break;
-    if (const auto* piece = splice::get_if<chevron::text>(&**next)) text += piece->content;
+    if (const auto* piece = spl::get_if<chevron::text>(&**next)) text += piece->content;
   }
   EXPECT_EQ(text, "]]>"sv);
 }

@@ -46,7 +46,7 @@ struct text {
   std::string_view content;
 };
 
-using event = splice::variant<start_element, end_element, text>;
+using event = spl::variant<start_element, end_element, text>;
 
 enum class error_code : std::uint8_t {
   ill_formed_utf8,          // bytes that are not UTF-8
@@ -97,7 +97,7 @@ namespace dialect {
 struct xml {};
 struct html {};
 }  // namespace dialect
-using dialect_t = splice::variant<dialect::xml, dialect::html>;
+using dialect_t = spl::variant<dialect::xml, dialect::html>;
 
 // What the parser holds to at most, against input that would exhaust it.
 struct limits {
@@ -445,7 +445,7 @@ class parser {
   constexpr explicit parser(limits held) : limits_(held) {}
   constexpr parser(limits held, dialect_t read)
       : limits_(held),
-        html_(splice::visit(splice::overloaded{[](dialect::xml) { return false; }, [](dialect::html) { return true; }},
+        html_(spl::visit(spl::overloaded{[](dialect::xml) { return false; }, [](dialect::html) { return true; }},
                             read)) {}
 
   // More of the input, in a piece of any size, split anywhere -- inside a
