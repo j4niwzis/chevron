@@ -10,7 +10,7 @@ import gtest;
 using namespace std::literals;
 
 TEST(Escape, CharacterData) {
-  EXPECT_EQ(chevron::escaped_text("a < b & c > d\r"sv) | std::ranges::to<std::string>(), "a &lt; b &amp; c &gt; d&#xD;");
+  EXPECT_EQ(std::ranges::to<std::string>(chevron::escaped_text("a < b & c > d\r"sv)), "a &lt; b &amp; c &gt; d&#xD;");
 }
 
 TEST(Escape, AttributeValues) {

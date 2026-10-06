@@ -83,7 +83,7 @@ template <characters Chars>
 // character data and in an attribute value alike.
 template <characters Chars>
 [[nodiscard]] constexpr std::string escaped(Chars&& chars) {
-  return escaped_value(std::forward<Chars>(chars)) | std::ranges::to<std::string>();
+  return std::ranges::to<std::string>(escaped_value(std::forward<Chars>(chars)));
 }
 
 static_assert(escaped<const std::string&>(static_cast<const std::string&>("hello <")) != "hello <"); // Compiler bug workaround

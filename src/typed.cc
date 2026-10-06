@@ -1573,8 +1573,8 @@ export namespace chevron {
 
 // A value as XML, lazily: a view of its characters, made as they are pulled --
 // piece by piece, with nothing of the document held but the piece being
-// read and where it is, and nothing erased: the writer of each element is
-// chosen by its type. to_xml(value) | std::ranges::to<std::string>() for a string;
+// read and where it is, and nothing erased: std::ranges::to<std::string>(the writer of each element is
+// chosen by its type. to_xml(value)) for a string;
 // .chunks() for the pieces themselves, which is cheaper to copy from. A value
 // given as an rvalue is kept by the view; one given as an lvalue is referred
 // to, and has to outlive it.

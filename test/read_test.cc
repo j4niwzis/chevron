@@ -159,12 +159,12 @@ TEST(Read, FromAParserFedAsBytesArrive) {
 
 TEST(Write, ExactOutput) {
   const chat::message m{"juliet", "romeo", std::nullopt, "a < b & \"c\"", {}};
-  EXPECT_EQ(chevron::to_xml(m) | std::ranges::to<std::string>(),
+  EXPECT_EQ(std::ranges::to<std::string>(chevron::to_xml(m)),
             "<message xmlns=\"urn:example:client\" to=\"juliet\" from=\"romeo\">"
             "<body>a &lt; b &amp; \"c\"</body></message>");
   // Attribute values keep their white space and quotes.
   const chat::message odd{"a\"b\tc", "x", "chat", std::nullopt, {}};
-  EXPECT_EQ(chevron::to_xml(odd) | std::ranges::to<std::string>(),
+  EXPECT_EQ(std::ranges::to<std::string>(chevron::to_xml(odd)),
             "<message xmlns=\"urn:example:client\" to=\"a&quot;b&#x9;c\" from=\"x\" type=\"chat\"/>");
 }
 
@@ -173,7 +173,7 @@ TEST(Write, ReadBackTheSame) {
   chat::query q;
   q.items.push_back({"nurse", 2, {"Capulets", "Servants"}});
   q.items.push_back({"romeo", 1, {}});
-  const std::string written = chevron::to_xml(q) | std::ranges::to<std::string>();
+  const std::string written = std::ranges::to<std::string>(chevron::to_xml(q));
   const auto back = chevron::read<chat::query>(std::string_view(written) | chevron::events);
   ASSERT_TRUE(back.has_value()) << written;
   ASSERT_EQ(back->items.size(), 2u);
@@ -188,10 +188,10 @@ TEST(Write, ReadBackTheSame) {
       "<x xmlns=\"urn:example:x\" a=\"1\">kept <y/></x></message>";
   const auto m = chevron::read<chat::message>(in | chevron::events);
   ASSERT_TRUE(m.has_value());
-  EXPECT_EQ(chevron::to_xml(*m) | std::ranges::to<std::string>(), in);
+  EXPECT_EQ(std::ranges::to<std::string>(chevron::to_xml(*m)), in);
 
   const chat::presence p{"away", 5};
-  const std::string presence = chevron::to_xml(p) | std::ranges::to<std::string>();
+  const std::string presence = std::ranges::to<std::string>(chevron::to_xml(p));
   const auto p_back = chevron::read<chat::presence>(std::string_view(presence) | chevron::events);
   ASSERT_TRUE(p_back.has_value()) << presence;
   EXPECT_EQ(p_back->show, p.show);
@@ -216,7 +216,7 @@ TEST(Write, LazyIsTheSameAsEager) {
   for (int n = 0; n < 50; ++n)
     q.items.push_back({"contact" + std::to_string(n), n, {"group <" + std::to_string(n % 3) + ">"}});
   const std::string whole = eagerly(q);
-  EXPECT_EQ(chevron::to_xml(q) | std::ranges::to<std::string>(), whole);
+  EXPECT_EQ(std::ranges::to<std::string>(chevron::to_xml(q)), whole);
 
   auto view = chevron::to_xml(q);
   std::string joined;
@@ -229,11 +229,11 @@ TEST(Write, LazyIsTheSameAsEager) {
   EXPECT_GT(pieces, 100u);  // made in pieces, not as one string
 
   // Kept by the view: the value it came from is gone.
-  const std::string kept = chevron::to_xml(chat::presence{"dnd", 7}) | std::ranges::to<std::string>();
+  const std::string kept = std::ranges::to<std::string>(chevron::to_xml(chat::presence{"dnd", 7}));
   EXPECT_EQ(kept, eagerly(chat::presence{"dnd", 7}));
 
   // Only as far as it is read: the first few characters, and no more made.
-  EXPECT_EQ(chevron::to_xml(q) | std::views::take(6) | std::ranges::to<std::string>(), "<query");
+  EXPECT_EQ(std::ranges::to<std::string>(chevron::to_xml(q) | std::views::take(6)), "<query");
 }
 
 
@@ -244,7 +244,7 @@ constexpr bool round_trip() {
   chat::query q;
   q.items.push_back({"nurse", 2, {"Capulets", "Servants"}});
   q.items.push_back({"romeo", 1, {}});
-  const std::string written = chevron::to_xml(q) | std::ranges::to<std::string>();
+  const std::string written = std::ranges::to<std::string>(chevron::to_xml(q));
   const auto back = chevron::read<chat::query>(std::string_view(written) | chevron::events);
   return back && back->items.size() == 2 && back->items[0].jid == "nurse" &&
          back->items[0].order == 2 && back->items[0].group.size() == 2 &&
@@ -291,7 +291,7 @@ TEST(Read, KeptAttributes) {
   EXPECT_EQ(got->others[2].first.first, "urn:example:x");
   EXPECT_EQ(got->others[2].second, "yes");
   // Written back, lazily and at once alike, and read back the same.
-  const std::string lazy = chevron::to_xml(*got) | std::ranges::to<std::string>();
+  const std::string lazy = std::ranges::to<std::string>(chevron::to_xml(*got));
   std::string eager;
   auto out = std::back_inserter(eager);
   chevron::write(out, *got);
@@ -340,7 +340,7 @@ TEST(Read, ChoiceAttribute) {
   ASSERT_TRUE(got.has_value());
   ASSERT_TRUE(got->type);
   EXPECT_TRUE(spl::holds_alternative<chat::groupchat>(*got->type));
-  EXPECT_EQ(chevron::to_xml(*got) | std::ranges::to<std::string>(),
+  EXPECT_EQ(std::ranges::to<std::string>(chevron::to_xml(*got)),
             R"(<note xmlns="urn:example:client" type="groupchat"><body>x</body></note>)");
   const auto none = chevron::read<chat::typed_note>(
       std::string_view(R"(<note xmlns="urn:example:client"/>)") | chevron::events);
@@ -389,13 +389,13 @@ TEST(Read, TellingAttribute) {
   EXPECT_EQ(named->index(), 1u);
   EXPECT_FALSE(pick(R"(<message xmlns="urn:example:client" type="headline"/>)").has_value());
   // Written with its attribute; the one absent means, without.
-  EXPECT_EQ(chevron::to_xml(kinds::chat{"x"}) | std::ranges::to<std::string>(),
+  EXPECT_EQ(std::ranges::to<std::string>(chevron::to_xml(kinds::chat{"x"})),
             R"(<message xmlns="urn:example:client" type="chat"><body>x</body></message>)");
   std::string eager;
   auto out = std::back_inserter(eager);
   chevron::write(out, kinds::chat{"x"});
   EXPECT_EQ(eager, R"(<message xmlns="urn:example:client" type="chat"><body>x</body></message>)");
-  EXPECT_EQ(chevron::to_xml(kinds::normal{"y"}) | std::ranges::to<std::string>(),
+  EXPECT_EQ(std::ranges::to<std::string>(chevron::to_xml(kinds::normal{"y"})),
             R"(<message xmlns="urn:example:client"><body>y</body></message>)");
 }
 
@@ -462,7 +462,7 @@ TEST(Read, Tagged) {
 
   std::string eager;
   chevron::write(std::back_inserter(eager), *message);
-  const std::string lazy = chevron::to_xml(*message) | std::ranges::to<std::string>();
+  const std::string lazy = std::ranges::to<std::string>(chevron::to_xml(*message));
   EXPECT_EQ(eager, lazy);
   EXPECT_NE(lazy.find("<delay xmlns=\"urn:xmpp:delay\" stamp=\"2002-09-10T23:08:25Z\"/>"), std::string::npos) << lazy;
   const auto back = chevron::read<note>(std::string_view(lazy) | chevron::events);
@@ -642,15 +642,15 @@ TEST(Write, MovingInlineOwnedAndBorrowedViewsRestartsTraversal) {
   auto iterator = chunks.begin();
   ++iterator;
   auto moved = std::move(original);
-  EXPECT_EQ(moved | std::ranges::to<std::string>(), eagerly(chat::presence{"short", 17}));
+  EXPECT_EQ(std::ranges::to<std::string>(moved), eagerly(chat::presence{"short", 17}));
   auto assigned = chevron::to_xml(chat::presence{"other", 2});
   assigned = std::move(moved);
-  EXPECT_EQ(assigned | std::ranges::to<std::string>(), eagerly(chat::presence{"short", 17}));
+  EXPECT_EQ(std::ranges::to<std::string>(assigned), eagerly(chat::presence{"short", 17}));
   chat::presence source{"borrowed", 8};
   auto borrowed = chevron::to_xml(source);
   auto moved_borrowed = std::move(borrowed);
   source.priority = 9;
-  EXPECT_EQ(moved_borrowed | std::ranges::to<std::string>(), eagerly(source));
+  EXPECT_EQ(std::ranges::to<std::string>(moved_borrowed), eagerly(source));
 }
 
 namespace streaming_test {
