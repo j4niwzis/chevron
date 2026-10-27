@@ -471,10 +471,18 @@ class parser {
   constexpr std::expected<std::optional<event>, error> next() {
     if (failed_)
       return std::unexpected(*failed_);
-    auto result = step();
-    if (!result)
-      failed_ = result.error();
-    return result;
+    for (;;) {
+      auto result = step();
+      if (!result) {
+        failed_ = result.error();
+        return result;
+      }
+      // A comment, ignored end tag, declaration or outside whitespace
+      // consumed input without producing an event. Continue here rather
+      // than recursing once for each skipped token.
+      if (*result || at_ == 0)
+        return result;
+    }
   }
 
   // Elements open now.
@@ -567,7 +575,7 @@ class parser {
         return finished_ ? as_text(in) : wait(in);
       if (end + (comment ? 3 : 1) > limits_.token) return fail(error_code::too_large, 0);
       at_ = end + (comment ? 3 : 1);
-      return step();
+      return std::nullopt;
     }
     if (in[1] == '/') {
       if (in.size() < 3)
@@ -579,7 +587,7 @@ class parser {
           return finished_ ? as_text(in) : wait(in);
         if (end + 1 > limits_.token) return fail(error_code::too_large, 0);
         at_ = end + 1;
-        return step();
+        return std::nullopt;
       }
       return html_end_tag(in);
     }
@@ -757,7 +765,7 @@ class parser {
     at_ = end + 1;
     const auto found = std::ranges::find(open_.rbegin(), open_.rend(), name, &open_element::raw);
     if (found == open_.rend())
-      return step();
+      return std::nullopt;
     pending_ends_ = static_cast<std::size_t>(found - open_.rbegin());
     return close_top();
   }
@@ -787,7 +795,7 @@ class parser {
     if (!declaration(in.substr(5, end - 5)))
       return fail(error_code::bad_declaration, 0);
     at_ = end + 2;
-    return step();
+    return std::nullopt;
   }
 
   // VersionInfo, then EncodingDecl and SDDecl if there: version 1.0, and an
@@ -962,7 +970,7 @@ class parser {
         if (!detail::space(in[at]))
           return fail(error_code::text_outside_root, at);
       at_ = stop;
-      return step();
+      return std::nullopt;
     }
     if (end == std::string_view::npos)
       return wait(in);

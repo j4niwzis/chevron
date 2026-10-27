@@ -352,6 +352,15 @@ TEST(Html, CommentsPassedOverAndAnUnclosedTagAsText) {
   EXPECT_EQ(joined(read_html("a<!-- c -->b<!DOCTYPE html>c <unclosed")), (shown_events{"T\"abc <unclosed\""}));
 }
 
+TEST(Html, LongRunsOfIgnoredMarkupDoNotRecurse) {
+  std::string html;
+  for (int i = 0; i < 20000; ++i)
+    html += "<!-- note --></ignored></>";
+  html += "<p>ready</p>";
+  EXPECT_EQ(read_html(html), (shown_events{"S{}p[]", "T\"ready\"", "E{}p"}));
+  EXPECT_EQ(joined(read_html(html, 31)), joined(read_html(html)));
+}
+
 TEST(Html, TheSameByteByByte) {
   for (const std::string_view html : {std::string_view("<p>one<p>two &amp; <b>x</b><br>y < z &#x1F600;"),
                                       std::string_view("<mx-reply><blockquote>q</blockquote></mx-reply>a<!--c-->b")})
